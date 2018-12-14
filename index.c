@@ -166,6 +166,10 @@ int32_t mm_idx_cal_max_occ(const mm_idx_t *mi, float f)
 	return thres;
 }
 
+int cmp(rname_rid_t *r0, rname_rid_t *r1)
+{
+    return strcmp(r0->rname, r1->rname);
+}
 /*********************************
  * Sort and generate hash tables *
  *********************************/
@@ -193,7 +197,15 @@ static void worker_post(void *g, long i, int tid)
 	kh_resize(idx, h, n_keys);
 	b->p = (uint64_t*)calloc(b->n, 8);
 
+	//modified by LQX
+
 	// create the hash table
+	/*
+	n=1 val ----63...43|42...22| 21   |20...0
+				 refid |refpos |strand|rankid
+	n>1 p[k]----63...43|42...22| 21   |20...0
+				 refid |refpos |strand|rankid
+	*/
 	for (j = 1, n = 1, start_a = start_p = 0; j <= b->a.n; ++j) {
 		if (j == b->a.n || b->a.a[j].x>>8 != b->a.a[j-1].x>>8) {
 			khint_t itr;
@@ -203,14 +215,30 @@ static void worker_post(void *g, long i, int tid)
 			assert(absent && j - start_a == n);
 			if (n == 1) {
 				kh_key(h, itr) |= 1;
-				kh_val(h, itr) = p->y;
+				//uint64_t val = p->y;
+				uint64_t refid = (p->y)>>32;
+				uint64_t refpos_strand = (p->y)&0xFFFFFFFF;
+				uint32_t rankid = mi->rever_rid[refid];
+				uint64_t val = ((refid&0x1FFFFF)<<43)|((refpos_strand&0x3FFFFF)<<21)|((rankid&0x1FFFFF));
+				kh_val(h, itr) = val;			
+				//fprintf(stderr,"finished work_post_n_1 \n");
 			} else {
 				int k;
 				for (k = 0; k < n; ++k)
 					b->p[start_p + k] = b->a.a[start_a + k].y;
 				radix_sort_64(&b->p[start_p], &b->p[start_p + n]); // sort by position; needed as in-place radix_sort_128x() is not stable
+				for (k = 0; k < n; ++k){
+					uint64_t refid = (b->p[start_p+k])>>32;
+					uint64_t refpos_strand = (b->p[start_p+k])&0xFFFFFFFF;
+					uint32_t rankid = mi->rever_rid[refid];
+					uint64_t pk = ((refid&0x1FFFFF)<<43)|((refpos_strand&0x3FFFFF)<<21)|((rankid&0x1FFFFF));
+					b->p[start_p+k] = pk;
+				}
 				kh_val(h, itr) = (uint64_t)start_p<<32 | n;
 				start_p += n;
+				//fprintf(stderr,"finished work_post\n");
+				//modified by LQX
+				
 			}
 			start_a = j, n = 1;
 		} else ++n;
@@ -221,6 +249,7 @@ static void worker_post(void *g, long i, int tid)
 	// deallocate and clear b->a
 	kfree(0, b->a.a);
 	b->a.n = b->a.m = 0, b->a.a = 0;
+	//fprintf(stderr,"finished work_post\n");
 }
  
 static void mm_idx_post(mm_idx_t *mi, int n_threads)
@@ -344,7 +373,41 @@ mm_idx_t *mm_idx_gen(mm_bseq_file_t *fp, int w, int k, int b, int flag, int mini
 	kt_pipeline(n_threads < 3? n_threads : 3, worker_pipeline, &pl, 3);
 	if (mm_verbose >= 3)
 		fprintf(stderr, "[M::%s::%.3f*%.2f] collected minimizers\n", __func__, realtime() - mm_realtime0, cputime() / (realtime() - mm_realtime0));
+	#if 1
+	{
+		mm_idx_t *mi = pl.mi;
+		mi->rname_rid = (rname_rid_t *)calloc(mi->n_seq, sizeof(rname_rid_t));
+		mi->rever_rid = (int *)calloc(mi->n_seq, sizeof(int));
 
+		//fprintf(stderr, "---------------------\n");
+		for (int k=0; k<mi->n_seq; k++)
+			{
+				const mm_idx_seq_t *s = &mi->seq[k];
+				strncpy(mi->rname_rid[k].rname, s->name, 255);
+				mi->rname_rid[k].rname[strlen(s->name)] = 0;
+				mi->rname_rid[k].rid = k;
+			}
+		
+		qsort(mi->rname_rid, mi->n_seq, sizeof(rname_rid_t), cmp);
+		/*
+		fprintf(stderr, "---------------------\n");
+		for (int k=0; k<mi->n_seq; k++)
+			{
+				fprintf(stderr, "%s\n", mi->rname_rid[k].rname);
+			}
+		*/
+		for (int k=0; k<mi->n_seq; k++)
+			{
+				mi->rever_rid[mi->rname_rid[k].rid] = k;
+			}
+		/*
+		for (int k=0; k<mi->n_seq; k++)
+			{
+				fprintf(stderr, "table,%d:%d\n", k, mi->rever_rid[k]);
+			}
+		*/
+	}
+	#endif
 	mm_idx_post(pl.mi, n_threads);
 	if (mm_verbose >= 3)
 		fprintf(stderr, "[M::%s::%.3f*%.2f] sorted minimizers\n", __func__, realtime() - mm_realtime0, cputime() / (realtime() - mm_realtime0));

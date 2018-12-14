@@ -113,22 +113,41 @@ static mm_match_t *collect_matches(void *km, int *_n_m, int max_occ, const mm_id
 	return m;
 }
 
-static inline int skip_seed(int flag, uint64_t r, const mm_match_t *q, const char *qname, int qlen, const mm_idx_t *mi, int *is_self)
+static inline int skip_seed(int flag, uint64_t r, const mm_match_t *q, const char *qname, unsigned int bid, int qlen, const mm_idx_t *mi, int *is_self)
 {
 	*is_self = 0;
+
 	if (qname && (flag & (MM_F_NO_DIAG|MM_F_NO_DUAL))) {
-		const mm_idx_seq_t *s = &mi->seq[r>>32];
-		int cmp;
-		cmp = strcmp(qname, s->name);
-		if ((flag&MM_F_NO_DIAG) && cmp == 0 && s->len == qlen) {
-			if ((uint32_t)r>>1 == (q->q_pos>>1)) return 1; // avoid the diagnonal anchors
-			if ((r&1) == (q->q_pos&1)) *is_self = 1; // this flag is used to avoid spurious extension on self chain
+		//const mm_idx_seq_t *s = &mi->seq[r>>32];
+        int cmp = 0;
+#if 1
+        //int rankID = mi->rever_rid[r>>32];
+		uint32_t rankID = (uint32_t)r&0x1FFFFF;
+        int flg = (bid &0x80000000)>>31;
+        int val = bid  &0x7fffffff;
+        if (val > rankID) cmp = 1;
+        else if (val < rankID) cmp = -1;
+        else if (val == rankID) {
+            if (flg) cmp = 0;
+            else cmp = -1;
+        }
+#endif
+		//int cmp2 = strcmp(qname, s->name);
+        //if (cmp2 > 0) cmp2 = 1;
+        //else if(cmp2 < 0) cmp2 = -1;
+        //if (cmp != cmp2) fprintf(stderr, "xxxxxxxxxxxxxx,cmp %d, cmp2 %d, qname %s,rname %s\n", qname, s->name);
+
+        //   cmp = cmp2;
+		
+		if ((flag&MM_F_NO_DIAG) && cmp == 0) {
+			if ((((r>>22) & 0x1fffff)) == (q->q_pos>>1)) return 1; // avoid the diagnonal anchors
+			if ((r&MM_P_STRAND)>>21 == (q->q_pos&1)) *is_self = 1; // this flag is used to avoid spurious extension on self chain
 		}
 		if ((flag&MM_F_NO_DUAL) && cmp > 0) // all-vs-all mode: map once
 			return 1;
 	}
 	if (flag & (MM_F_FOR_ONLY|MM_F_REV_ONLY)) {
-		if ((r&1) == (q->q_pos&1)) { // forward strand
+		if ((r&MM_P_STRAND)>>21 == (q->q_pos&1)) { // forward strand
 			if (flag & MM_F_REV_ONLY) return 1;
 		} else {
 			if (flag & MM_F_FOR_ONLY) return 1;
@@ -163,7 +182,7 @@ static mm128_t *collect_seed_hits_heap(void *km, const mm_mapopt_t *opt, int max
 		mm128_t *p;
 		uint64_t r = heap->x;
 		int32_t is_self, rpos = (uint32_t)r >> 1;
-		if (skip_seed(opt->flag, r, q, qname, qlen, mi, &is_self)) continue;
+		if (skip_seed(opt->flag, r, q, qname, 0, qlen, mi, &is_self)) continue;
 		if ((r&1) == (q->q_pos&1)) { // forward strand
 			p = &a[n_for++];
 			p->x = (r&0xffffffff00000000ULL) | rpos;
@@ -202,29 +221,46 @@ static mm128_t *collect_seed_hits_heap(void *km, const mm_mapopt_t *opt, int max
 	return a;
 }
 
-static mm128_t *collect_seed_hits(void *km, const mm_mapopt_t *opt, int max_occ, const mm_idx_t *mi, const char *qname, const mm128_v *mv, int qlen, int64_t *n_a, int *rep_len,
+static mm128_t *collect_seed_hits(void *km, const mm_mapopt_t *opt, int max_occ, const mm_idx_t *mi, const char *qname, const mm128_v *mv, unsigned int bid, int qlen, int64_t *n_a, int *rep_len,
 								  int *n_mini_pos, uint64_t **mini_pos)
 {
 	int i, k, n_m;
 	mm_match_t *m;
 	mm128_t *a;
+	//fprintf(stderr,"collect_matches begin\n");
 	m = collect_matches(km, &n_m, max_occ, mi, mv, n_a, rep_len, n_mini_pos, mini_pos);
+	
 	a = (mm128_t*)kmalloc(km, *n_a * sizeof(mm128_t));
 	for (i = 0, *n_a = 0; i < n_m; ++i) {
 		mm_match_t *q = &m[i];
 		const uint64_t *r = q->cr;
 		for (k = 0; k < q->n; ++k) {
-			int32_t is_self, rpos = (uint32_t)r[k] >> 1;
+			int32_t is_self;
+			//modified by LQX
+			int32_t rpos = (r[k]>>22) & 0x1fffff;
+			//fprintf(stderr,"get rpos OK\n");
 			mm128_t *p;
-			if (skip_seed(opt->flag, r[k], q, qname, qlen, mi, &is_self)) continue;
+			if (skip_seed(opt->flag, r[k], q, qname, bid, qlen, mi, &is_self)) continue;
+			//fprintf(stderr,"skip_seed OK\n");
 			p = &a[(*n_a)++];
-			if ((r[k]&1) == (q->q_pos&1)) { // forward strand
-				p->x = (r[k]&0xffffffff00000000ULL) | rpos;
-				p->y = (uint64_t)q->q_span << 32 | q->q_pos >> 1;
+			//modified by LQX
+			/*
+			n=1 val ----63...43|42...22| 21   |20...0
+						 refid |refpos |strand|rankid
+			n>1 p[k]----63...43|42...22| 21   |20...0
+						 refid |refpos |strand|rankid
+			*/
+			//if ((r[k]&1) == (q->q_pos&1)) { // forward strand
+			if((r[k]&MM_P_STRAND)>>21 == (q->q_pos&1)){// forward strand
+				//p->x = (r[k]&0xffffffff00000000ULL) | rpos;
+				p->x = ((r[k]&0xfffff80000000000ULL)>>11) | rpos;
+				p->y = (uint64_t)q->q_span << 32 | q->q_pos >> 1;				
 			} else { // reverse strand
-				p->x = 1ULL<<63 | (r[k]&0xffffffff00000000ULL) | rpos;
+				//p->x = 1ULL<<63 | (r[k]&0xffffffff00000000ULL) | rpos;
+				p->x = 1ULL<<63 | ((r[k]&0xfffff80000000000ULL)>>11)  | rpos;
 				p->y = (uint64_t)q->q_span << 32 | (qlen - ((q->q_pos>>1) + 1 - q->q_span) - 1);
 			}
+			//fprintf(stderr,"seed assemble OK\n");
 			p->y |= (uint64_t)q->seg_id << MM_SEED_SEG_SHIFT;
 			if (q->is_tandem) p->y |= MM_SEED_TANDEM;
 			if (is_self) p->y |= MM_SEED_SELF;
@@ -232,6 +268,7 @@ static mm128_t *collect_seed_hits(void *km, const mm_mapopt_t *opt, int max_occ,
 	}
 	kfree(km, m);
 	radix_sort_128x(a, a + (*n_a));
+	//fprintf(stderr,"seed num %d\n",*n_a);
 	return a;
 }
 
@@ -258,6 +295,32 @@ static mm_reg1_t *align_regs(const mm_mapopt_t *opt, const mm_idx_t *mi, void *k
 	return regs;
 }
 
+#include "minimap.h"
+unsigned int dichotomy_sort(char *qname, rname_rid_t* ref_name, int ref_name_size)
+{
+    unsigned int start=0, end = ref_name_size-1, mid;
+    int cmp;
+    while(start < end)
+        {
+            mid = (start + end)>>1;
+            cmp = strcmp(qname, ref_name[mid].rname);
+            if(cmp == 0)
+                return (mid | 1UL<<31);
+            else if( cmp < 0 )
+                end = mid;
+            else
+                start = mid+1;
+        }
+    if (start == end) {
+        cmp = strcmp(qname, ref_name[start].rname);
+        if(cmp == 0)
+            return (start | 1UL<<31);
+        else if (cmp > 0) return start+1;
+    }
+    return start;
+}
+
+
 void mm_map_frag(const mm_idx_t *mi, int n_segs, const int *qlens, const char **seqs, int *n_regs, mm_reg1_t **regs, mm_tbuf_t *b, const mm_mapopt_t *opt, const char *qname)
 {
 	int i, j, rep_len, qlen_sum, n_regs0, n_mini_pos;
@@ -279,10 +342,15 @@ void mm_map_frag(const mm_idx_t *mi, int n_segs, const int *qlens, const char **
 	hash ^= __ac_Wang_hash(qlen_sum) + __ac_Wang_hash(opt->seed);
 	hash  = __ac_Wang_hash(hash);
 
+   
+    unsigned int bid = dichotomy_sort(qname, mi->rname_rid, mi->n_seq);
+    
 	collect_minimizers(b->km, opt, mi, n_segs, qlens, seqs, &mv);
-	if (opt->flag & MM_F_HEAP_SORT) a = collect_seed_hits_heap(b->km, opt, opt->mid_occ, mi, qname, &mv, qlen_sum, &n_a, &rep_len, &n_mini_pos, &mini_pos);
-	else a = collect_seed_hits(b->km, opt, opt->mid_occ, mi, qname, &mv, qlen_sum, &n_a, &rep_len, &n_mini_pos, &mini_pos);
-
+	//if (opt->flag & MM_F_HEAP_SORT) a = collect_seed_hits_heap(b->km, opt, opt->mid_occ, mi, qname, &mv, qlen_sum, &n_a, &rep_len, &n_mini_pos, &mini_pos);
+	//else
+		a = collect_seed_hits(b->km, opt, opt->mid_occ, mi, qname, &mv, bid, qlen_sum, &n_a, &rep_len, &n_mini_pos, &mini_pos);
+	//if(n_a == 0) {fprintf(stderr,"error!\n");}
+	//fprintf(stderr,"finish one read!\n");
 	if (mm_dbg_flag & MM_DBG_PRINT_SEED) {
 		fprintf(stderr, "RS\t%d\n", rep_len);
 		for (i = 0; i < n_a; ++i)
@@ -302,7 +370,7 @@ void mm_map_frag(const mm_idx_t *mi, int n_segs, const int *qlens, const char **
 	} else max_chain_gap_ref = opt->max_gap;
 
 	a = mm_chain_dp(max_chain_gap_ref, max_chain_gap_qry, opt->bw, opt->max_chain_skip, opt->min_cnt, opt->min_chain_score, is_splice, n_segs, n_a, a, &n_regs0, &u, b->km);
-
+	//fprintf(stderr,"finish cdp one read!\n");
 	if (opt->max_occ > opt->mid_occ && rep_len > 0) {
 		int rechain = 0;
 		if (n_regs0 > 0) { // test if the best chain has all the segments
@@ -321,14 +389,15 @@ void mm_map_frag(const mm_idx_t *mi, int n_segs, const int *qlens, const char **
 			kfree(b->km, a);
 			kfree(b->km, u);
 			kfree(b->km, mini_pos);
-			if (opt->flag & MM_F_HEAP_SORT) a = collect_seed_hits_heap(b->km, opt, opt->max_occ, mi, qname, &mv, qlen_sum, &n_a, &rep_len, &n_mini_pos, &mini_pos);
-			else a = collect_seed_hits(b->km, opt, opt->max_occ, mi, qname, &mv, qlen_sum, &n_a, &rep_len, &n_mini_pos, &mini_pos);
+			//if (opt->flag & MM_F_HEAP_SORT) a = collect_seed_hits_heap(b->km, opt, opt->max_occ, mi, qname, &mv, qlen_sum, &n_a, &rep_len, &n_mini_pos, &mini_pos);
+			//else 
+		a = collect_seed_hits(b->km, opt, opt->max_occ, mi, qname, &mv, bid, qlen_sum, &n_a, &rep_len, &n_mini_pos, &mini_pos);
 			a = mm_chain_dp(max_chain_gap_ref, max_chain_gap_qry, opt->bw, opt->max_chain_skip, opt->min_cnt, opt->min_chain_score, is_splice, n_segs, n_a, a, &n_regs0, &u, b->km);
 		}
 	}
 
 	regs0 = mm_gen_regs(b->km, hash, qlen_sum, n_regs0, u, a);
-
+	//fprintf(stderr,"finish mm_gen_regs one read!\n");
 	if (mm_dbg_flag & MM_DBG_PRINT_SEED)
 		for (j = 0; j < n_regs0; ++j)
 			for (i = regs0[j].as; i < regs0[j].as + regs0[j].cnt; ++i)
@@ -336,6 +405,7 @@ void mm_map_frag(const mm_idx_t *mi, int n_segs, const int *qlens, const char **
 						i == regs0[j].as? 0 : ((int32_t)a[i].y - (int32_t)a[i-1].y) - ((int32_t)a[i].x - (int32_t)a[i-1].x));
 
 	chain_post(opt, max_chain_gap_ref, mi, b->km, qlen_sum, n_segs, qlens, &n_regs0, regs0, a);
+	//fprintf(stderr,"finish chain_post one read!\n");
 	if (!is_sr) mm_est_err(mi, qlen_sum, n_regs0, regs0, a, n_mini_pos, mini_pos);
 
 	if (n_segs == 1) { // uni-segment
@@ -355,7 +425,7 @@ void mm_map_frag(const mm_idx_t *mi, int n_segs, const int *qlens, const char **
 		if (n_segs == 2 && opt->pe_ori >= 0 && (opt->flag&MM_F_CIGAR))
 			mm_pair(b->km, max_chain_gap_ref, opt->pe_bonus, opt->a * 2 + opt->b, opt->a, qlens, n_regs, regs); // pairing
 	}
-
+	//fprintf(stderr,"finish all one read!\n");
 	kfree(b->km, mv.a);
 	kfree(b->km, a);
 	kfree(b->km, u);
