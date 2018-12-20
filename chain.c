@@ -26,8 +26,53 @@ struct new_seed
     int32_t f;
 };
 
-extern uint64_t total_counter = 0;
 extern pthread_mutex_t counter_mutex;
+
+typedef struct __attribute__((__packed__)) _FPGAHDR {
+    uint32_t magic;
+    uint32_t size;
+    uint16_t tid;
+    uint16_t num;
+    uint8_t type;
+    uint8_t lat;
+    uint8_t padding[50];
+} FPGAHDR;
+typedef struct __attribute__((__packed__)) _DPHDR {
+    uint32_t gap_ref;
+    uint32_t gap_qry;
+    uint32_t seednum;
+    uint32_t qlensum;
+    uint32_t ctxpos;
+    uint32_t bid;
+    uint16_t n_segs;
+    uint8_t b;
+    uint8_t padding[37];
+} DPHDR;
+typedef struct __attribute__((__packed__)) _ODPHDR {
+    uint32_t err_flag;
+    uint32_t ctxpos;
+    uint32_t subsize;
+    uint32_t n_a;
+    uint32_t n_minipos;
+    uint32_t rep_len;
+    uint8_t padding[40];
+} ODPHDR;
+
+#define BUFFSIZE (16 * 1024 * 1024)
+extern char* txtbuff;
+extern int ntxt;
+extern char * gentxt(uint8_t *dat, int datlen);
+extern FILE *fcshi, *fcsho, *fdpi, *fdpo;
+extern FILE *fbcshi, *fbcsho, *fbdpi, *fbdpo;
+
+static uint8_t gbuff[BUFFSIZE];
+static int gbufflen = 0;
+static uint8_t gobuff[BUFFSIZE];
+static int gobufflen = 0;
+static int maxdp = 8;
+static int maxcsh = 8;
+static int gn = 0;
+static uint32_t gmagic = 0;
 
 mm128_t *mm_chain_dp(int max_dist_x, int max_dist_y, int bw, int max_skip, int min_cnt, int min_sc, int is_cdna, int n_segs, int64_t n, mm128_t *a, int *n_u_, uint64_t **_u, void *km)
 { // TODO: make sure this works when n has more than 32 bits
@@ -38,6 +83,54 @@ mm128_t *mm_chain_dp(int max_dist_x, int max_dist_y, int bw, int max_skip, int m
 	mm128_t *b, *w;
     struct new_seed* fpga_a = NULL;
     int32_t *fpga_id = NULL;
+
+    // sim input
+    int orglen;
+    if (gn == 0) {
+        memset(gbuff, 0, sizeof(FPGAHDR));
+        memset(gobuff, 0, sizeof(FPGAHDR));
+        FPGAHDR *a = (FPGAHDR *)gbuff;
+        a->magic = gmagic;
+        a->type = 1;
+        a->tid = 0x66;
+        a->lat = 0x77;
+        gbufflen = sizeof(FPGAHDR);
+        FPGAHDR *o = (FPGAHDR *)gobuff;
+        o->magic = gmagic;
+        o->type = 1;
+        o->tid = 0x66;
+        o->lat = 0x77;
+        gobufflen = sizeof(FPGAHDR);
+    }
+    DPHDR *input = (DPHDR *)(gbuff + gbufflen);
+    memset(input, 0, sizeof(DPHDR));
+    input->gap_ref = max_dist_x;
+    input->gap_qry = max_dist_y;
+    input->seednum = n;
+    input->ctxpos = 0x88;
+    input->n_segs = n_segs;
+    gbufflen += sizeof(DPHDR);
+    memcpy(gbuff + gbufflen, a, n * 16);
+    gbufflen += n * 16;
+    if (gbufflen % 64 != 0) {
+        gbufflen = (gbufflen >> 6 << 6) + 64;
+    }
+    assert(gbufflen < BUFFSIZE);
+    FILE *fp;
+    if ((fp = fopen("DP_IN.dat", "a")) != NULL) {
+        fprintf(fp, "%x\n", max_dist_x);
+        fprintf(fp, "%x\n", max_dist_y);
+        fprintf(fp, "%lx\n", n);
+        fprintf(fp, "%x\n", n_segs);
+        fclose(fp);
+    }
+    if ((fp = fopen("DP_SEED.dat", "a")) != NULL) {
+        fprintf(fp, "\n\n%x\n", gn);
+        for (i = 0; i < n; i++) {
+            fprintf(fp, "%016lx%016lx\n", a[i].x, a[i].y);
+        }
+        fclose(fp);
+    }
 
 	if (_u) *_u = 0, *n_u_ = 0;
 	f = (int32_t*)kmalloc(km, n * 4);
@@ -50,7 +143,7 @@ mm128_t *mm_chain_dp(int max_dist_x, int max_dist_y, int bw, int max_skip, int m
     //memset(fpga_id, 0xff, n * sizeof(int32_t));
     for(i = 0; i < n; i++)
         fpga_id[i] = -1;
-    
+
 
 	for (i = 0; i < n; ++i) sum_qspan += a[i].y>>32&0xff;
 	avg_qspan = (float)sum_qspan / n;
@@ -96,43 +189,86 @@ mm128_t *mm_chain_dp(int max_dist_x, int max_dist_y, int bw, int max_skip, int m
 		}
 		f[i] = max_f, p[i] = max_j;
 		v[i] = max_j >= 0 && v[max_j] > max_f? v[max_j] : max_f; // v[] keeps the peak score up to i; f[] is the score ending at i, not always the peak
-        
+
         //
         if(p[i] >= 0) {                 //
-            if(fpga_id[p[i]] != -1) {   //seed“—æ≠‘⁄fpga_a÷–¡À
+            if(fpga_id[p[i]] != -1) {   //seedÂ∑≤ÁªèÂú®fpga_a‰∏≠‰∫Ü
                 fpga_a[new_i].p = fpga_id[p[i]]<<2;
             }
             else {
                 fpga_a[new_i].seed = a[p[i]];
                 fpga_a[new_i].f = f[p[i]];
                 fpga_id[p[i]] = new_i;
-                
+
                 fpga_a[new_i].p = (-1)<<2;
                 fpga_a[new_i].p |= (v[p[i]] >= min_sc);
                 fpga_a[new_i].p |= ((f[p[i]] < v[p[i]]) << 1);
-                
+
                 new_i++;
             }
         }
         if((v[i] >= min_sc) || (p[i] >= 0)) {
             fpga_a[new_i].seed = a[i];
             fpga_a[new_i].f = f[i];
-            
+
             fpga_id[i] = new_i;
-            
+
             if(p[i]>=0) fpga_a[new_i].p = fpga_id[p[i]]<<2;
             else fpga_a[new_i].p = (-1)<<2;
-            
+
             fpga_a[new_i].p |= (v[i] >= min_sc);
             fpga_a[new_i].p |= (f[i] < v[i]) << 1;
-            
+
             new_i++;
         }
     }
 
+    // sim output
+    orglen = gobufflen;
+    ODPHDR *output = (ODPHDR *)(gobuff + gobufflen);
+    memset(output, 0, sizeof(ODPHDR));
+    output->ctxpos = 0x88;
+    output->n_a = new_i;
+    output->n_minipos = 0;
+    gobufflen += sizeof(ODPHDR);
+    memcpy(gobuff + gobufflen, fpga_a, new_i * 24);
+    gobufflen += new_i * 24;
+    if (gobufflen % 64 != 0) {
+        gobufflen = (gobufflen >> 6 << 6) + 64;
+    }
+    output->subsize = gobufflen - orglen;
+    assert(gobufflen < BUFFSIZE);
+
+    gn++;
+    if (gn == maxdp) {
+        assert(gbufflen % 64 == 0);
+        assert(gobufflen % 64 == 0);
+
+        //set nread,size
+        FPGAHDR *a = (FPGAHDR *)gbuff;
+        a->size = gbufflen;
+        a->num = gn;
+        FPGAHDR *o = (FPGAHDR *)gobuff;
+        o->size = gobufflen;
+        o->num = gn;
+
+        //write sim
+        gentxt(gbuff, gbufflen);
+        fwrite(txtbuff, 1, ntxt, fdpi);
+        gentxt(gobuff, gobufflen);
+        fwrite(txtbuff, 1, ntxt, fdpo);
+
+        //write
+        fwrite(gbuff, 1, gbufflen, fbdpi);
+        fwrite(gobuff, 1, gobufflen, fbdpo);
+
+        gn = 0;
+        gmagic++;
+    }
+
     //lvjingbang
     uint64_t counter = 0;
-    
+
 	// find the ending positions of chains
 	memset(t, 0, n * 4);
 	for (i = 0; i < new_i; ++i)
@@ -150,7 +286,7 @@ mm128_t *mm_chain_dp(int max_dist_x, int max_dist_y, int bw, int max_skip, int m
 	}
     kfree(km, f);
     kfree(km, p);
-    
+
 	u = (uint64_t*)kmalloc(km, n_u * 8);
 	for (i = n_u = 0; i < new_i; ++i) {
 		//if (t[i] == 0 && v[i] >= min_sc) {
@@ -162,7 +298,7 @@ mm128_t *mm_chain_dp(int max_dist_x, int max_dist_y, int bw, int max_skip, int m
 			u[n_u++] = (uint64_t)fpga_a[j].f << 32 | j;
 		}
 	}
-	radix_sort_64(u, u + n_u);  //TODO –ﬁ∏ƒŒ™¥”¥ÛµΩ–°
+	radix_sort_64(u, u + n_u);  //TODO ‰øÆÊîπ‰∏∫‰ªéÂ§ßÂà∞Â∞è
 	for (i = 0; i < n_u>>1; ++i) { // reverse, s.t. the highest scoring chain is the first
 		uint64_t t = u[i];
 		u[i] = u[n_u - i - 1], u[n_u - i - 1] = t;
@@ -200,7 +336,7 @@ mm128_t *mm_chain_dp(int max_dist_x, int max_dist_y, int bw, int max_skip, int m
 			b[k] = fpga_a[v[k0 + (ni - j - 1)]].seed, ++k;
 	}
 	kfree(km, v);
-    
+
     kfree(km, fpga_a);
     kfree(km, fpga_id);
 
@@ -221,5 +357,8 @@ mm128_t *mm_chain_dp(int max_dist_x, int max_dist_y, int bw, int max_skip, int m
 	memcpy(u, u2, n_u * 8);
 	memcpy(b, a, k * sizeof(mm128_t)); // write _a_ to _b_ and deallocate _a_ because _a_ is oversized, sometimes a lot
 	kfree(km, a); kfree(km, w); kfree(km, u2);
+
+
+
 	return b;
 }

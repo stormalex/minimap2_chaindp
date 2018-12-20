@@ -24,11 +24,60 @@ KHASH_MAP_INIT_STR(str, uint32_t)
 
 #define kroundup64(x) (--(x), (x)|=(x)>>1, (x)|=(x)>>2, (x)|=(x)>>4, (x)|=(x)>>8, (x)|=(x)>>16, (x)|=(x)>>32, ++(x))
 
+//extern FILE *fidxcall;
+//extern FILE *fbreq, *fhreq, *fvreq, *fpreq;
+//extern FILE *fback, *fhack, *fvack, *fpack;
+
+typedef struct _BBB {
+    uint64_t h:36,hvalid:1, padding:27;
+    uint64_t p:36,n_buckets:28;
+} BBB;
+int szb,szh,szp,szv;
+int write64(uint8_t *buff, int n, int nall, FILE* fp)
+{
+    int newn = nall + n;
+    char s[64];
+    for (int i = 0; i < n; i++) {
+        fprintf(fp, "%02x", buff[i]);
+    }
+    if (newn % 64 == 0) {
+        fwrite("\n", 1, 1, fp);
+    }
+    return newn;
+}
+void write64_bin(uint8_t* buff, int n, FILE* fp)
+{
+    char s[64];
+    for (int i = 0; i < n; i++) {
+        fwrite(&buff[i], 1, 1, fp);
+    }
+    return;
+}
+int fit4k(int nall, FILE* fp)
+{
+    uint8_t zero[64] = {0};
+    if (nall % 64 != 0) {
+        int n = (nall+63)/64*64 - nall;
+        nall = write64((uint8_t *)zero, n, nall, fp);
+    }
+    if (nall % 4096 != 0) {
+        int n = (nall+4095)/4096*4096 - nall;
+        int m = n / 64;
+        for (int i = 0; i < m; i++) {
+            nall = write64((uint8_t *)zero, 64, nall, fp);
+        }
+    }
+    fprintf(stderr, "--- fit to %d\n", nall);
+    return nall;
+}
+
+
 typedef struct mm_idx_bucket_s {
 	mm128_v a;   // (minimizer, position) array
 	int32_t n;   // size of the _p_ array
 	uint64_t *p; // position array for minimizers appearing >1 times
 	void *h;     // hash table indexing _p_ and minimizers appearing once
+    uint64_t hoff, poff;
 } mm_idx_bucket_t;
 
 mm_idx_t *mm_idx_init(int w, int k, int b, int flag)
@@ -61,22 +110,107 @@ void mm_idx_destroy(mm_idx_t *mi)
 	free(mi->B); free(mi->S); free(mi);
 }
 
+uint64_t gret;
 const uint64_t *mm_idx_get(const mm_idx_t *mi, uint64_t minier, int *n)
 {
 	int mask = (1<<mi->b) - 1;
 	khint_t k;
+    uint64_t breq,hreq,preq,vreq;
+    uint64_t back,hack,pack,vack;
+    breq=hreq=preq=vreq=back=hack=pack=vack=-1;
 	mm_idx_bucket_t *b = &mi->B[minier&mask];
+    breq = minier&mask;
+    //fprintf(fbreq, "%09lx\n", breq);
 	idxhash_t *h = (idxhash_t*)b->h;
 	*n = 0;
-	if (h == 0) return 0;
+	if (h == 0) {
+        uint64_t B[2] = {0};
+        B[1] = b->hoff << 28 | b->poff >> 8;
+        B[0] =(((b->poff&0xFF)<<56) | 0<<24);
+        //fprintf(fidxcall, "breq %lx\nhoff %lx\npoff %lx\nnh %lx\n", breq, b->hoff, b->poff, 0UL);
+        //fprintf(fback, "%016lx\n", B[1]);
+        //fprintf(fback, "%016lx\n", B[0]);
+        return 0;
+    } else {
+        uint64_t n_buckets = kh_end(h);
+        uint64_t B[2] = {0};
+        B[1] = b->hoff << 28 | b->poff >> 8;
+        B[0] =(((b->poff&0xFF)<<56) | n_buckets<<24);
+        //fprintf(fidxcall, "breq %lx\nhoff %lx\npoff %lx\nnh %lx\n", breq, b->hoff, b->poff, n_buckets);
+        //fprintf(fback, "%016lx\n", B[1]);
+        //fprintf(fback, "%016lx\n", B[0]);
+    }
 	k = kh_get(idx, h, minier>>mi->b<<1);
+    uint64_t key = minier>>mi->b<<1;
+    if (h->n_buckets) {
+        khint_t k1, i, last, mask, step = 0;
+        mask = h->n_buckets - 1;
+        k1 = ((key)>>1); i = k1 & mask;
+        last = i;
+        int getk = 0;
+        uint64_t h2[2] = {0};
+        hreq = b->hoff + i;
+        h2[1] = (uint64_t)h->flags[i>>4] << 32 | (uint32_t)(kh_key(h, i) >> 16);
+        h2[0] = (kh_key(h, i) & 0xffff) << 48;
+        //fprintf(fhreq, "%09lx\n", hreq);
+        //fprintf(fhack, "%016lx\n", h2[1]);
+        //fprintf(fhack, "%016lx\n", h2[0]);
+        while (!((h->flags[i>>4]>>((i&0xfU)<<1))&2) && (((h->flags[i>>4]>>((i&0xfU)<<1))&1) || !((h->keys[i])>>1 == (key)>>1))) {
+            i = (i + (++step)) & mask;
+            if (i == last) {
+                k = h->n_buckets;
+                getk = 1;
+                break;
+            }
+            uint64_t h2[2] = {0};
+            hreq = b->hoff + i;
+            h2[1] = (uint64_t)h->flags[i>>4] << 32 | (uint32_t)(kh_key(h, i) >> 16);
+            h2[0] = (kh_key(h, i) & 0xffff) << 48;
+            //fprintf(fhreq, "%09lx\n", hreq);
+            //fprintf(fhack, "%016lx\n", h2[1]);
+            //fprintf(fhack, "%016lx\n", h2[0]);
+        }
+        if (getk == 0) {
+            k = ((h->flags[i>>4]>>((i&0xfU)<<1))&3)? h->n_buckets : i;
+        }
+    } else
+        k = 0;
+    hreq = minier>>mi->b<<1;
+    hack = k;
+    //fprintf(fidxcall, "hreq %lx\nhack %lx\n", hreq, hack);
 	if (k == kh_end(h)) return 0;
 	if (kh_key(h, k)&1) { // special casing when there is only one k-mer
 		*n = 1;
-		return &kh_val(h, k);
+        uint64_t *v = &kh_val(h, k);
+        vreq = b->hoff + k;
+        vack = *v;
+        //fprintf(fidxcall, "vreq %lx\nvack %lx\n", vreq, vack);
+        //fprintf(fvreq, "%09lx\n", vreq);
+        //fprintf(fvack, "%016lx\n", vack);
+        return v;
 	} else {
 		*n = (uint32_t)kh_val(h, k);
-		return &b->p[kh_val(h, k)>>32];
+        vreq = b->hoff + k;
+        vack = kh_val(h, k);
+        //fprintf(fidxcall, "vreq %lx\nvack %lx\n", vreq, vack);
+        //fprintf(fvreq, "%09lx\n", vreq);
+        //fprintf(fvack, "%016lx\n", vack);
+		uint64_t *p = &b->p[kh_val(h, k)>>32];
+        uint64_t poff = b->poff + (kh_val(h, k)>>32);
+        preq = poff;
+        //fprintf(fidxcall, "preq %lx\n", preq);
+        //fprintf(fpreq, "%016lx\n", poff << 28 | (kh_val(h, k) & 0xffffffff));
+
+	uint32_t num = (uint32_t)vack;
+	uint32_t start = (uint32_t)(vack>>32);
+	
+        //for (int i = 0; i < b->n; i++) {
+        for (int i = 0; i < num; i++) {
+            pack = p[i];
+            //fprintf(fidxcall, "pack %lx\n", pack);
+            //fprintf(fpack, "%016lx\n", pack);
+        }
+        return p;
 	}
 }
 
@@ -220,7 +354,7 @@ static void worker_post(void *g, long i, int tid)
 				uint64_t refpos_strand = (p->y)&0xFFFFFFFF;
 				uint32_t rankid = mi->rever_rid[refid];
 				uint64_t val = ((refid&0x1FFFFF)<<43)|((refpos_strand&0x3FFFFF)<<21)|((rankid&0x1FFFFF));
-				kh_val(h, itr) = val;			
+				kh_val(h, itr) = val;
 				//fprintf(stderr,"finished work_post_n_1 \n");
 			} else {
 				int k;
@@ -238,7 +372,7 @@ static void worker_post(void *g, long i, int tid)
 				start_p += n;
 				//fprintf(stderr,"finished work_post\n");
 				//modified by LQX
-				
+
 			}
 			start_a = j, n = 1;
 		} else ++n;
@@ -251,7 +385,7 @@ static void worker_post(void *g, long i, int tid)
 	b->a.n = b->a.m = 0, b->a.a = 0;
 	//fprintf(stderr,"finished work_post\n");
 }
- 
+
 static void mm_idx_post(mm_idx_t *mi, int n_threads)
 {
 	kt_for(n_threads, worker_post, mi, 1<<mi->b);
@@ -387,7 +521,7 @@ mm_idx_t *mm_idx_gen(mm_bseq_file_t *fp, int w, int k, int b, int flag, int mini
 				mi->rname_rid[k].rname[strlen(s->name)] = 0;
 				mi->rname_rid[k].rid = k;
 			}
-		
+
 		qsort(mi->rname_rid, mi->n_seq, sizeof(rname_rid_t), cmp);
 		/*
 		fprintf(stderr, "---------------------\n");
@@ -411,6 +545,127 @@ mm_idx_t *mm_idx_gen(mm_bseq_file_t *fp, int w, int k, int b, int flag, int mini
 	mm_idx_post(pl.mi, n_threads);
 	if (mm_verbose >= 3)
 		fprintf(stderr, "[M::%s::%.3f*%.2f] sorted minimizers\n", __func__, realtime() - mm_realtime0, cputime() / (realtime() - mm_realtime0));
+
+    uint8_t buff[1024];
+    mm_idx_t *mi = pl.mi;
+    int i, j;
+    FILE *fidxb, *fidxh, *fidxp, *fidxv;
+    FILE *fidxb_bin, *fidxh_bin, *fidxp_bin, *fidxv_bin;
+    //FILE *fidxbt, *fidxht, *fidxpt, *fidxvt;
+    if ((fidxb = fopen("idxb.txt", "w")) == NULL) {
+        perror("open data file failed!");
+        exit(1);
+    }
+    if ((fidxh = fopen("idxh.txt", "w")) == NULL) {
+        perror("open data file failed!");
+        exit(1);
+    }
+    if ((fidxp = fopen("idxp.txt", "w")) == NULL) {
+        perror("open data file failed!");
+        exit(1);
+    }
+    if ((fidxv = fopen("idxv.txt", "w")) == NULL) {
+        perror("open data file failed!");
+        exit(1);
+    }
+    /*if ((fidxbt = fopen("idxbt.txt", "w")) == NULL) {
+        perror("open data file failed!");
+        exit(1);
+    }*/
+    if ((fidxb_bin = fopen("idxb.dat", "w")) == NULL) {
+        perror("open data file failed!");
+        exit(1);
+    }
+    if ((fidxh_bin = fopen("idxh.dat", "w")) == NULL) {
+        perror("open data file failed!");
+        exit(1);
+    }
+    if ((fidxp_bin = fopen("idxp.dat", "w")) == NULL) {
+        perror("open data file failed!");
+        exit(1);
+    }
+    if ((fidxv_bin = fopen("idxv.dat", "w")) == NULL) {
+        perror("open data file failed!");
+        exit(1);
+    }
+
+    //gen idx data
+    uint64_t allh = 0;
+    uint64_t allp = 0;
+	uint32_t loop_num = 0;
+    for(i = 0;i < (1<<mi->b);++i){
+        kh_idx_t* h = (idxhash_t*)mi->B[i].h;
+        uint64_t B[2] = {0};
+        if (mi->B[i].h) {
+            uint64_t values;
+            //Get B Array
+            uint64_t n_buckets;
+            n_buckets = kh_end((idxhash_t*)mi->B[i].h);
+            B[1] = allh << 28 | allp >> 8;
+            B[0] =(((allp&0xFF)<<56) | (n_buckets<<24));
+            //fprintf(fidxbt, "%lx %lx %x\n", allh, allp, n_buckets);
+            szb = write64((uint8_t *)B, 16, szb, fidxb);
+            write64_bin((uint8_t *)B, 16, fidxb_bin);
+
+            //set B
+            mi->B[i].hoff = allh;
+            mi->B[i].poff = allp;
+
+            allh += n_buckets;
+            allp += mi->B[i].n;
+            //将 n_buckets h p 合并到128bit中，实际是拆分两个64bit 顺序分别为h-36bit|p-28bit|p-8bit|n_buckets-32bit|padding
+            for(int j = 0;j < n_buckets;++j){
+                uint64_t flags;
+                uint64_t keys;
+                flags = h->flags[j>>4];
+                keys = h->keys[j];
+                uint64_t a[2]={0};
+
+                //Get H Array
+                a[1] |= flags;
+                a[1] = (a[1] << 32) |((keys&0xffffffffffffUL)>>16);
+                a[0] |= keys&0xffff;
+                a[0] = a[0]<<48;
+                szh = write64((uint8_t *)a, 16, szh, fidxh);
+                write64_bin((uint8_t *)a, 16, fidxh_bin);
+
+                //Get Values Array
+                values = h->vals[j];//value是后期可能要优化为48bit    21-bit|22-bit|padding
+                szv = write64((uint8_t *)&values, 8, szv, fidxv);
+                write64_bin((uint8_t *)&values, 8, fidxv_bin);
+				loop_num++;
+            }
+
+            //Get p Array
+            int n = mi->B[i].n;
+            for(int j = 0;j < n;++j){
+                values = mi->B[i].p[j];
+                szp = write64((uint8_t *)&values, 8, szp, fidxp);
+                write64_bin((uint8_t *)&values, 8, fidxp_bin);
+            }
+        } else {
+            //fprintf(fidxbt, "%lx %lx %x\n", 0L, 0L, 0);
+            szb = write64((uint8_t *)B, 16, szb, fidxb);
+            write64_bin((uint8_t *)B, 16, fidxb_bin);
+        }
+    }
+
+    //align to 4KB
+    fit4k(szb, fidxb);
+    fit4k(szh, fidxh);
+    fit4k(szp, fidxp);
+    fit4k(szv, fidxv);
+
+    fclose(fidxb);
+    fclose(fidxh);
+    fclose(fidxp);
+    fclose(fidxv);
+    fclose(fidxb_bin);
+    fclose(fidxh_bin);
+    fclose(fidxp_bin);
+    fclose(fidxv_bin);
+
+    //fclose(fidxbt);
 
 	return pl.mi;
 }

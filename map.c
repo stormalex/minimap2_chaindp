@@ -138,7 +138,7 @@ static inline int skip_seed(int flag, uint64_t r, const mm_match_t *q, const cha
         //if (cmp != cmp2) fprintf(stderr, "xxxxxxxxxxxxxx,cmp %d, cmp2 %d, qname %s,rname %s\n", qname, s->name);
 
         //   cmp = cmp2;
-		
+
 		if ((flag&MM_F_NO_DIAG) && cmp == 0) {
 			if ((((r>>22) & 0x1fffff)) == (q->q_pos>>1)) return 1; // avoid the diagnonal anchors
 			if ((r&MM_P_STRAND)>>21 == (q->q_pos&1)) *is_self = 1; // this flag is used to avoid spurious extension on self chain
@@ -221,6 +221,69 @@ static mm128_t *collect_seed_hits_heap(void *km, const mm_mapopt_t *opt, int max
 	return a;
 }
 
+typedef struct __attribute__((__packed__)) _FPGAHDR {
+    uint32_t magic;
+    uint32_t size;
+    uint16_t tid;
+    uint16_t num;
+    uint8_t type;
+    uint8_t lat;
+    uint8_t padding[50];
+} FPGAHDR;
+typedef struct __attribute__((__packed__)) _DPHDR {
+    uint32_t gap_ref;
+    uint32_t gap_qry;
+    uint32_t seednum;
+    uint32_t qlensum;
+    uint32_t ctxpos;
+    uint32_t bid;
+    uint16_t n_segs;
+    uint8_t b;
+    uint8_t padding[37];
+} DPHDR;
+typedef struct __attribute__((__packed__)) _ODPHDR {
+    uint32_t err_flag;
+    uint32_t ctxpos;
+    uint32_t subsize;
+    uint32_t n_a;
+    uint32_t n_minipos;
+    uint32_t rep_len;
+    uint8_t padding[40];
+} ODPHDR;
+
+#define BUFFSIZE (16 * 1024 * 1024)
+
+char* txtbuff;
+int ntxt;
+char * gentxt(uint8_t *dat, int datlen)
+{
+    int i, j;
+    int n = datlen / 64;
+    for (i = 0; i < n; i++) {
+        for (j = 0; j < 64; j++) {
+            sprintf(txtbuff + 129 * i + j * 2, "%02x", dat[64 * i + (63 - j)]);
+        }
+        txtbuff[129 * i + 128] = '\n';
+    }
+    ntxt = 129 * n;
+    return txtbuff;
+}
+
+FILE *fcshi, *fcsho, *fdpi, *fdpo;
+FILE *fbcshi, *fbcsho, *fbdpi, *fbdpo;
+//FILE *fidxcall;
+//FILE *fbreq, *fhreq, *fvreq, *fpreq;
+//FILE *fback, *fhack, *fvack, *fpack;
+static uint8_t gbuff[BUFFSIZE];
+static int gbufflen = 0;
+static uint8_t gobuff[BUFFSIZE];
+static int gobufflen = 0;
+static int maxdp = 8;
+static int maxcsh = 8;
+static int gn = 0;
+static uint32_t gmagic = 0;
+static uint32_t gread = 0;
+
 static mm128_t *collect_seed_hits(void *km, const mm_mapopt_t *opt, int max_occ, const mm_idx_t *mi, const char *qname, const mm128_v *mv, unsigned int bid, int qlen, int64_t *n_a, int *rep_len,
 								  int *n_mini_pos, uint64_t **mini_pos)
 {
@@ -228,8 +291,63 @@ static mm128_t *collect_seed_hits(void *km, const mm_mapopt_t *opt, int max_occ,
 	mm_match_t *m;
 	mm128_t *a;
 	//fprintf(stderr,"collect_matches begin\n");
+
+    // sim input
+    int orglen;
+    if (gn == 0) {
+        memset(gbuff, 0, sizeof(FPGAHDR));
+        memset(gobuff, 0, sizeof(FPGAHDR));
+        FPGAHDR *a = (FPGAHDR *)gbuff;
+        a->magic = gmagic;
+        a->type = 3;
+        a->tid = 66;
+        a->lat = 77;
+        gbufflen = sizeof(FPGAHDR);
+        FPGAHDR *o = (FPGAHDR *)gobuff;
+        o->magic = gmagic;
+        o->type = 3;
+        o->tid = 66;
+        o->lat = 77;
+        gobufflen = sizeof(FPGAHDR);
+
+        //fprintf(fvack, "count=%u\n", gmagic); 
+        //fprintf(fback, "count=%u\n", gmagic); 
+        //fprintf(fhack, "count=%u\n", gmagic); 
+        //fprintf(fpack, "count=%u\n", gmagic); 
+
+        //fprintf(fvreq, "count=%u\n", gmagic); 
+        //fprintf(fbreq, "count=%u\n", gmagic); 
+        //fprintf(fhreq, "count=%u\n", gmagic); 
+        //fprintf(fpreq, "count=%u\n", gmagic); 
+    }
+	//fprintf(fvack, "read=%u\n", gread); 
+	//fprintf(fback, "read=%u\n", gread); 
+	//fprintf(fhack, "read=%u\n", gread); 
+	//fprintf(fpack, "read=%u\n", gread); 
+
+	//fprintf(fvreq, "read=%u\n", gread); 
+	//fprintf(fbreq, "read=%u\n", gread); 
+	//fprintf(fhreq, "read=%u\n", gread); 
+	//fprintf(fpreq, "read=%u\n", gread); 
+	gread++;
+
+    DPHDR *input = (DPHDR *)(gbuff + gbufflen);
+    memset(input, 0, sizeof(DPHDR));
+    input->seednum = mv->n;
+    input->qlensum = qlen;
+    input->ctxpos = 88;
+    input->bid = bid;
+    input->b = mi->b;
+    gbufflen += sizeof(DPHDR);
+    memcpy(gbuff + gbufflen, mv->a, mv->n * 16);
+    gbufflen += mv->n * 16;
+    if (gbufflen % 64 != 0) {
+        gbufflen = (gbufflen >> 6 << 6) + 64;
+    }
+    assert(gbufflen < BUFFSIZE);
+
 	m = collect_matches(km, &n_m, max_occ, mi, mv, n_a, rep_len, n_mini_pos, mini_pos);
-	
+
 	a = (mm128_t*)kmalloc(km, *n_a * sizeof(mm128_t));
 	for (i = 0, *n_a = 0; i < n_m; ++i) {
 		mm_match_t *q = &m[i];
@@ -254,7 +372,7 @@ static mm128_t *collect_seed_hits(void *km, const mm_mapopt_t *opt, int max_occ,
 			if((r[k]&MM_P_STRAND)>>21 == (q->q_pos&1)){// forward strand
 				//p->x = (r[k]&0xffffffff00000000ULL) | rpos;
 				p->x = ((r[k]&0xfffff80000000000ULL)>>11) | rpos;
-				p->y = (uint64_t)q->q_span << 32 | q->q_pos >> 1;				
+				p->y = (uint64_t)q->q_span << 32 | q->q_pos >> 1;
 			} else { // reverse strand
 				//p->x = 1ULL<<63 | (r[k]&0xffffffff00000000ULL) | rpos;
 				p->x = 1ULL<<63 | ((r[k]&0xfffff80000000000ULL)>>11)  | rpos;
@@ -267,8 +385,73 @@ static mm128_t *collect_seed_hits(void *km, const mm_mapopt_t *opt, int max_occ,
 		}
 	}
 	kfree(km, m);
+	//added by LQX
+	FILE *fp = 0;
+	fp = fopen("./out0.txt", "a");
+	if(fp == NULL) fprintf(stderr,"open out0 file fail!\n");
+	for (int k=0; k< *n_a; k++) 
+	{
+	  /*fwrite(&mv.a[k], 16, 1, fp);*/
+	  char v[33]={0};
+	  snprintf(v,sizeof(v),"%016lx%016lx",a[k].x,a[k].y);
+	  fwrite(v,sizeof(v)-1,1,fp);
+	  fwrite("\r\n",2,1,fp);
+	  /*fprintf(stderr, "%016lx,%016lx\n", a[k].x,a[k].y);*/
+	}
+	fclose(fp);
 	radix_sort_128x(a, a + (*n_a));
 	//fprintf(stderr,"seed num %d\n",*n_a);
+
+    // sim output
+    orglen = gobufflen;
+    ODPHDR *output = (ODPHDR *)(gobuff + gobufflen);
+    memset(output, 0, sizeof(ODPHDR));
+    output->ctxpos = 88;
+    output->n_a = *n_a;
+    output->n_minipos = *n_mini_pos;
+    output->rep_len = *rep_len;
+    gobufflen += sizeof(ODPHDR);
+    memcpy(gobuff + gobufflen, a, *n_a * 16);
+    gobufflen += *n_a * 16;
+    if (gobufflen % 64 != 0) {
+        gobufflen = (gobufflen >> 6 << 6) + 64;
+    }
+    memcpy(gobuff + gobufflen, *mini_pos, *n_mini_pos * 8);
+    gobufflen += *n_mini_pos * 8;
+    if (gobufflen % 64 != 0) {
+        gobufflen = (gobufflen >> 6 << 6) + 64;
+    }
+    output->subsize = gobufflen - orglen;
+    assert(gobufflen < BUFFSIZE);
+
+    gn++;
+    if (gn == maxcsh) {
+	gread = 0;
+        assert(gbufflen % 64 == 0);
+        assert(gobufflen % 64 == 0);
+
+        //set nread,size
+        FPGAHDR *a = (FPGAHDR *)gbuff;
+        a->size = gbufflen;
+        a->num = gn;
+        FPGAHDR *o = (FPGAHDR *)gobuff;
+        o->size = gobufflen;
+        o->num = gn;
+
+        //write sim
+        gentxt(gbuff, gbufflen);
+        fwrite(txtbuff, 1, ntxt, fcshi);
+        gentxt(gobuff, gobufflen);
+        fwrite(txtbuff, 1, ntxt, fcsho);
+
+        //write
+        fwrite(gbuff, 1, gbufflen, fbcshi);
+        fwrite(gobuff, 1, gobufflen, fbcsho);
+
+        gn = 0;
+        gmagic++;
+    }
+
 	return a;
 }
 
@@ -296,7 +479,7 @@ static mm_reg1_t *align_regs(const mm_mapopt_t *opt, const mm_idx_t *mi, void *k
 }
 
 #include "minimap.h"
-unsigned int dichotomy_sort(char *qname, rname_rid_t* ref_name, int ref_name_size)
+unsigned int dichotomy_sort(const char *qname, rname_rid_t* ref_name, int ref_name_size)
 {
     unsigned int start=0, end = ref_name_size-1, mid;
     int cmp;
@@ -342,8 +525,9 @@ void mm_map_frag(const mm_idx_t *mi, int n_segs, const int *qlens, const char **
 	hash ^= __ac_Wang_hash(qlen_sum) + __ac_Wang_hash(opt->seed);
 	hash  = __ac_Wang_hash(hash);
 
-   
     unsigned int bid = dichotomy_sort(qname, mi->rname_rid, mi->n_seq);
+
+    txtbuff = (char*)malloc(1024*1024*1024);
     
 	collect_minimizers(b->km, opt, mi, n_segs, qlens, seqs, &mv);
 	//if (opt->flag & MM_F_HEAP_SORT) a = collect_seed_hits_heap(b->km, opt, opt->mid_occ, mi, qname, &mv, qlen_sum, &n_a, &rep_len, &n_mini_pos, &mini_pos);
@@ -351,6 +535,30 @@ void mm_map_frag(const mm_idx_t *mi, int n_segs, const int *qlens, const char **
 		a = collect_seed_hits(b->km, opt, opt->mid_occ, mi, qname, &mv, bid, qlen_sum, &n_a, &rep_len, &n_mini_pos, &mini_pos);
 	//if(n_a == 0) {fprintf(stderr,"error!\n");}
 	//fprintf(stderr,"finish one read!\n");
+	FILE *fp = 0;
+	fp = fopen("./out1.txt", "a");
+	if(fp == NULL) fprintf(stderr,"open out1 file fail!\n");
+	for (int k=0; k<n_mini_pos; k++) 
+	{
+	  /*fwrite(&mv.a[k], 16, 1, fp);*/
+	  char v[17]={0};
+	  snprintf(v,sizeof(v),"%016lx",mini_pos[k]);
+	  fwrite(v,sizeof(v)-1,1,fp);
+	  fwrite("\r\n",2,1,fp);
+	  //mini_pos++;
+	  /*fprintf(stderr, "%016lx,%016lx\n", a[k].x,a[k].y);*/
+	}
+	fclose(fp);
+	fp = fopen("./out2.txt", "a");
+	{
+	  /*fwrite(&mv.a[k], 16, 1, fp);*/
+	  char v[25]={0};
+	  snprintf(v,sizeof(v),"%08x%08x%08x",(uint32_t)n_a,n_mini_pos,rep_len);
+	  fwrite(v,sizeof(v)-1,1,fp);
+	  fwrite("\r\n",2,1,fp);
+	  /*fprintf(stderr, "%016lx,%016lx\n", a[k].x,a[k].y);*/
+	}
+	fclose(fp);
 	if (mm_dbg_flag & MM_DBG_PRINT_SEED) {
 		fprintf(stderr, "RS\t%d\n", rep_len);
 		for (i = 0; i < n_a; ++i)
@@ -369,8 +577,11 @@ void mm_map_frag(const mm_idx_t *mi, int n_segs, const int *qlens, const char **
 		if (max_chain_gap_ref < opt->max_gap) max_chain_gap_ref = opt->max_gap;
 	} else max_chain_gap_ref = opt->max_gap;
 
+	if(n_a > 65535) fprintf(stderr,"seed num over 65535 read name is %s\n",qname);
 	a = mm_chain_dp(max_chain_gap_ref, max_chain_gap_qry, opt->bw, opt->max_chain_skip, opt->min_cnt, opt->min_chain_score, is_splice, n_segs, n_a, a, &n_regs0, &u, b->km);
-	//fprintf(stderr,"finish cdp one read!\n");
+	
+    free(txtbuff);
+    //fprintf(stderr,"finish cdp one read!\n");
 	if (opt->max_occ > opt->mid_occ && rep_len > 0) {
 		int rechain = 0;
 		if (n_regs0 > 0) { // test if the best chain has all the segments
@@ -390,7 +601,7 @@ void mm_map_frag(const mm_idx_t *mi, int n_segs, const int *qlens, const char **
 			kfree(b->km, u);
 			kfree(b->km, mini_pos);
 			//if (opt->flag & MM_F_HEAP_SORT) a = collect_seed_hits_heap(b->km, opt, opt->max_occ, mi, qname, &mv, qlen_sum, &n_a, &rep_len, &n_mini_pos, &mini_pos);
-			//else 
+			//else
 		a = collect_seed_hits(b->km, opt, opt->max_occ, mi, qname, &mv, bid, qlen_sum, &n_a, &rep_len, &n_mini_pos, &mini_pos);
 			a = mm_chain_dp(max_chain_gap_ref, max_chain_gap_qry, opt->bw, opt->max_chain_skip, opt->min_cnt, opt->min_chain_score, is_splice, n_segs, n_a, a, &n_regs0, &u, b->km);
 		}
@@ -606,7 +817,107 @@ int mm_map_file_frag(const mm_idx_t *idx, int n_segs, const char **fn, const mm_
 	pl.n_threads = n_threads > 1? n_threads : 1;
 	pl.mini_batch_size = opt->mini_batch_size;
 	pl_threads = n_threads == 1? 1 : (opt->flag&MM_F_2_IO_THREADS)? 3 : 2;
+
+    fprintf(stderr, "------ bw: 0x%x, is_cnda: 0x%x\n", opt->bw, !!(opt->flag & MM_F_SPLICE));
+    fprintf(stderr, "------ max_skip: 0x%x, min_sc: 0x%x\n", opt->max_chain_skip, opt->min_chain_score);
+    fprintf(stderr, "------ max_occ: 0x%x, flag: 0x%x\n", opt->mid_occ, opt->flag);
+    if ((fcshi = fopen("cshinput.txt", "w")) == NULL) {
+        perror("open data file failed!");
+        exit(1);
+    }
+    if ((fcsho = fopen("cshoutput.txt", "w")) == NULL) {
+        perror("open data file failed!");
+        exit(1);
+    }
+    if ((fdpi = fopen("dpinput.txt", "w")) == NULL) {
+        perror("open data file failed!");
+        exit(1);
+    }
+    if ((fdpo = fopen("dpoutput.txt", "w")) == NULL) {
+        perror("open data file failed!");
+        exit(1);
+    }
+
+    if ((fbcshi = fopen("cshinput.dat", "wb")) == NULL) {
+        perror("open data file failed!");
+        exit(1);
+    }
+    if ((fbcsho = fopen("cshoutput.dat", "wb")) == NULL) {
+        perror("open data file failed!");
+        exit(1);
+    }
+    if ((fbdpi = fopen("dpinput.dat", "wb")) == NULL) {
+        perror("open data file failed!");
+        exit(1);
+    }
+    if ((fbdpo = fopen("dpoutput.dat", "wb")) == NULL) {
+        perror("open data file failed!");
+        exit(1);
+    }
+    /*if ((fidxcall = fopen("idxcall.txt", "w")) == NULL) {
+        perror("open data file failed!");
+        exit(1);
+    }*/
+    //BReq.hex、BAck.hex、HReq.hex、HAck.hex、VReq.hex、VAck.hex、PReq.hex、PAck.hex
+    /*if ((fbreq = fopen("breq.txt", "w")) == NULL) {
+        perror("open data file failed!");
+        exit(1);
+    }
+    if ((fhreq = fopen("hreq.txt", "w")) == NULL) {
+        perror("open data file failed!");
+        exit(1);
+    }
+    if ((fvreq = fopen("vreq.txt", "w")) == NULL) {
+        perror("open data file failed!");
+        exit(1);
+    }
+    if ((fpreq = fopen("preq.txt", "w")) == NULL) {
+        perror("open data file failed!");
+        exit(1);
+    }
+    if ((fback = fopen("back.txt", "w")) == NULL) {
+        perror("open data file failed!");
+        exit(1);
+    }
+    if ((fhack = fopen("hack.txt", "w")) == NULL) {
+        perror("open data file failed!");
+        exit(1);
+    }
+    if ((fvack = fopen("vack.txt", "w")) == NULL) {
+        perror("open data file failed!");
+        exit(1);
+    }
+    if ((fpack = fopen("pack.txt", "w")) == NULL) {
+        perror("open data file failed!");
+        exit(1);
+    }*/
+    system("rm DP_IN.dat");
+    system("rm DP_SEED.dat");
+    system("rm REQACK.dat");
+
 	kt_pipeline(pl_threads, worker_pipeline, &pl, 3);
+
+    fclose(fcshi);
+    fclose(fcsho);
+    fclose(fdpi);
+    fclose(fdpo);
+
+    fclose(fbcshi);
+    fclose(fbcsho);
+    fclose(fbdpi);
+    fclose(fbdpo);
+    system("./revert.py");
+
+    //fclose(fidxcall);
+    //fclose(fbreq);
+    //fclose(fhreq);
+    //fclose(fvreq);
+    //fclose(fpreq);
+    //fclose(fback);
+    //fclose(fhack);
+    //fclose(fvack);
+    //fclose(fpack);
+
 	free(pl.str.s);
 	for (i = 0; i < n_segs; ++i)
 		mm_bseq_close(pl.fp[i]);
