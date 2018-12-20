@@ -290,61 +290,64 @@ static mm128_t *collect_seed_hits(void *km, const mm_mapopt_t *opt, int max_occ,
 	int i, k, n_m;
 	mm_match_t *m;
 	mm128_t *a;
+    int orglen;
 	//fprintf(stderr,"collect_matches begin\n");
 
-    // sim input
-    int orglen;
-    if (gn == 0) {
-        memset(gbuff, 0, sizeof(FPGAHDR));
-        memset(gobuff, 0, sizeof(FPGAHDR));
-        FPGAHDR *a = (FPGAHDR *)gbuff;
-        a->magic = gmagic;
-        a->type = 3;
-        a->tid = 66;
-        a->lat = 77;
-        gbufflen = sizeof(FPGAHDR);
-        FPGAHDR *o = (FPGAHDR *)gobuff;
-        o->magic = gmagic;
-        o->type = 3;
-        o->tid = 66;
-        o->lat = 77;
-        gobufflen = sizeof(FPGAHDR);
+    if(mv->n > 0) {
+        // sim input
+        
+        if (gn == 0) {
+            memset(gbuff, 0, sizeof(FPGAHDR));
+            memset(gobuff, 0, sizeof(FPGAHDR));
+            FPGAHDR *a = (FPGAHDR *)gbuff;
+            a->magic = gmagic;
+            a->type = 3;
+            a->tid = 66;
+            a->lat = 77;
+            gbufflen = sizeof(FPGAHDR);
+            FPGAHDR *o = (FPGAHDR *)gobuff;
+            o->magic = gmagic;
+            o->type = 3;
+            o->tid = 66;
+            o->lat = 77;
+            gobufflen = sizeof(FPGAHDR);
 
-        //fprintf(fvack, "count=%u\n", gmagic); 
-        //fprintf(fback, "count=%u\n", gmagic); 
-        //fprintf(fhack, "count=%u\n", gmagic); 
-        //fprintf(fpack, "count=%u\n", gmagic); 
+            //fprintf(fvack, "count=%u\n", gmagic); 
+            //fprintf(fback, "count=%u\n", gmagic); 
+            //fprintf(fhack, "count=%u\n", gmagic); 
+            //fprintf(fpack, "count=%u\n", gmagic); 
 
-        //fprintf(fvreq, "count=%u\n", gmagic); 
-        //fprintf(fbreq, "count=%u\n", gmagic); 
-        //fprintf(fhreq, "count=%u\n", gmagic); 
-        //fprintf(fpreq, "count=%u\n", gmagic); 
+            //fprintf(fvreq, "count=%u\n", gmagic); 
+            //fprintf(fbreq, "count=%u\n", gmagic); 
+            //fprintf(fhreq, "count=%u\n", gmagic); 
+            //fprintf(fpreq, "count=%u\n", gmagic); 
+        }
+        //fprintf(fvack, "read=%u\n", gread); 
+        //fprintf(fback, "read=%u\n", gread); 
+        //fprintf(fhack, "read=%u\n", gread); 
+        //fprintf(fpack, "read=%u\n", gread); 
+
+        //fprintf(fvreq, "read=%u\n", gread); 
+        //fprintf(fbreq, "read=%u\n", gread); 
+        //fprintf(fhreq, "read=%u\n", gread); 
+        //fprintf(fpreq, "read=%u\n", gread); 
+        gread++;
+
+        DPHDR *input = (DPHDR *)(gbuff + gbufflen);
+        memset(input, 0, sizeof(DPHDR));
+        input->seednum = mv->n;
+        input->qlensum = qlen;
+        input->ctxpos = 88;
+        input->bid = bid;
+        input->b = mi->b;
+        gbufflen += sizeof(DPHDR);
+        memcpy(gbuff + gbufflen, mv->a, mv->n * 16);
+        gbufflen += mv->n * 16;
+        if (gbufflen % 64 != 0) {
+            gbufflen = (gbufflen >> 6 << 6) + 64;
+        }
+        assert(gbufflen < BUFFSIZE);
     }
-	//fprintf(fvack, "read=%u\n", gread); 
-	//fprintf(fback, "read=%u\n", gread); 
-	//fprintf(fhack, "read=%u\n", gread); 
-	//fprintf(fpack, "read=%u\n", gread); 
-
-	//fprintf(fvreq, "read=%u\n", gread); 
-	//fprintf(fbreq, "read=%u\n", gread); 
-	//fprintf(fhreq, "read=%u\n", gread); 
-	//fprintf(fpreq, "read=%u\n", gread); 
-	gread++;
-
-    DPHDR *input = (DPHDR *)(gbuff + gbufflen);
-    memset(input, 0, sizeof(DPHDR));
-    input->seednum = mv->n;
-    input->qlensum = qlen;
-    input->ctxpos = 88;
-    input->bid = bid;
-    input->b = mi->b;
-    gbufflen += sizeof(DPHDR);
-    memcpy(gbuff + gbufflen, mv->a, mv->n * 16);
-    gbufflen += mv->n * 16;
-    if (gbufflen % 64 != 0) {
-        gbufflen = (gbufflen >> 6 << 6) + 64;
-    }
-    assert(gbufflen < BUFFSIZE);
 
 	m = collect_matches(km, &n_m, max_occ, mi, mv, n_a, rep_len, n_mini_pos, mini_pos);
 
@@ -402,56 +405,57 @@ static mm128_t *collect_seed_hits(void *km, const mm_mapopt_t *opt, int max_occ,
 	radix_sort_128x(a, a + (*n_a));
 	//fprintf(stderr,"seed num %d\n",*n_a);
 
-    // sim output
-    orglen = gobufflen;
-    ODPHDR *output = (ODPHDR *)(gobuff + gobufflen);
-    memset(output, 0, sizeof(ODPHDR));
-    output->ctxpos = 88;
-    output->n_a = *n_a;
-    output->n_minipos = *n_mini_pos;
-    output->rep_len = *rep_len;
-    gobufflen += sizeof(ODPHDR);
-    memcpy(gobuff + gobufflen, a, *n_a * 16);
-    gobufflen += *n_a * 16;
-    if (gobufflen % 64 != 0) {
-        gobufflen = (gobufflen >> 6 << 6) + 64;
+    if(mv->n > 0) {
+        // sim output
+        orglen = gobufflen;
+        ODPHDR *output = (ODPHDR *)(gobuff + gobufflen);
+        memset(output, 0, sizeof(ODPHDR));
+        output->ctxpos = 88;
+        output->n_a = *n_a;
+        output->n_minipos = *n_mini_pos;
+        output->rep_len = *rep_len;
+        gobufflen += sizeof(ODPHDR);
+        memcpy(gobuff + gobufflen, a, *n_a * 16);
+        gobufflen += *n_a * 16;
+        if (gobufflen % 64 != 0) {
+            gobufflen = (gobufflen >> 6 << 6) + 64;
+        }
+        memcpy(gobuff + gobufflen, *mini_pos, *n_mini_pos * 8);
+        gobufflen += *n_mini_pos * 8;
+        if (gobufflen % 64 != 0) {
+            gobufflen = (gobufflen >> 6 << 6) + 64;
+        }
+        output->subsize = gobufflen - orglen;
+        assert(gobufflen < BUFFSIZE);
+
+        gn++;
+        if (gn == maxcsh) {
+        gread = 0;
+            assert(gbufflen % 64 == 0);
+            assert(gobufflen % 64 == 0);
+
+            //set nread,size
+            FPGAHDR *a = (FPGAHDR *)gbuff;
+            a->size = gbufflen;
+            a->num = gn;
+            FPGAHDR *o = (FPGAHDR *)gobuff;
+            o->size = gobufflen;
+            o->num = gn;
+
+            //write sim
+            gentxt(gbuff, gbufflen);
+            fwrite(txtbuff, 1, ntxt, fcshi);
+            gentxt(gobuff, gobufflen);
+            fwrite(txtbuff, 1, ntxt, fcsho);
+
+            //write
+            fwrite(gbuff, 1, gbufflen, fbcshi);
+            fwrite(gobuff, 1, gobufflen, fbcsho);
+
+            gn = 0;
+            gmagic++;
+        }
     }
-    memcpy(gobuff + gobufflen, *mini_pos, *n_mini_pos * 8);
-    gobufflen += *n_mini_pos * 8;
-    if (gobufflen % 64 != 0) {
-        gobufflen = (gobufflen >> 6 << 6) + 64;
-    }
-    output->subsize = gobufflen - orglen;
-    assert(gobufflen < BUFFSIZE);
-
-    gn++;
-    if (gn == maxcsh) {
-	gread = 0;
-        assert(gbufflen % 64 == 0);
-        assert(gobufflen % 64 == 0);
-
-        //set nread,size
-        FPGAHDR *a = (FPGAHDR *)gbuff;
-        a->size = gbufflen;
-        a->num = gn;
-        FPGAHDR *o = (FPGAHDR *)gobuff;
-        o->size = gobufflen;
-        o->num = gn;
-
-        //write sim
-        gentxt(gbuff, gbufflen);
-        fwrite(txtbuff, 1, ntxt, fcshi);
-        gentxt(gobuff, gobufflen);
-        fwrite(txtbuff, 1, ntxt, fcsho);
-
-        //write
-        fwrite(gbuff, 1, gbufflen, fbcshi);
-        fwrite(gobuff, 1, gobufflen, fbcsho);
-
-        gn = 0;
-        gmagic++;
-    }
-
 	return a;
 }
 
