@@ -26,9 +26,6 @@ struct new_seed
     int32_t f;
 };
 
-extern uint64_t total_counter = 0;
-extern pthread_mutex_t counter_mutex;
-
 mm128_t *mm_chain_dp(int max_dist_x, int max_dist_y, int bw, int max_skip, int min_cnt, int min_sc, int is_cdna, int n_segs, int64_t n, mm128_t *a, int *n_u_, uint64_t **_u, void *km)
 { // TODO: make sure this works when n has more than 32 bits
 	int32_t k, *f, *p, *t, *v, n_u, n_v;
@@ -129,9 +126,6 @@ mm128_t *mm_chain_dp(int max_dist_x, int max_dist_y, int bw, int max_skip, int m
             new_i++;
         }
     }
-
-    //lvjingbang
-    uint64_t counter = 0;
     
 	// find the ending positions of chains
 	memset(t, 0, n * 4);

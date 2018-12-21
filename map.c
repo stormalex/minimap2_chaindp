@@ -156,71 +156,6 @@ static inline int skip_seed(int flag, uint64_t r, const mm_match_t *q, const cha
 	return 0;
 }
 
-static mm128_t *collect_seed_hits_heap(void *km, const mm_mapopt_t *opt, int max_occ, const mm_idx_t *mi, const char *qname, const mm128_v *mv, int qlen, int64_t *n_a, int *rep_len,
-								  int *n_mini_pos, uint64_t **mini_pos)
-{
-	int i, n_m, heap_size = 0;
-	int64_t j, n_for = 0, n_rev = 0;
-	mm_match_t *m;
-	mm128_t *a, *heap;
-
-	m = collect_matches(km, &n_m, max_occ, mi, mv, n_a, rep_len, n_mini_pos, mini_pos);
-
-	heap = (mm128_t*)kmalloc(km, n_m * sizeof(mm128_t));
-	a = (mm128_t*)kmalloc(km, *n_a * sizeof(mm128_t));
-
-	for (i = 0, heap_size = 0; i < n_m; ++i) {
-		if (m[i].n > 0) {
-			heap[heap_size].x = m[i].cr[0];
-			heap[heap_size].y = (uint64_t)i<<32;
-			++heap_size;
-		}
-	}
-	ks_heapmake_heap(heap_size, heap);
-	while (heap_size > 0) {
-		mm_match_t *q = &m[heap->y>>32];
-		mm128_t *p;
-		uint64_t r = heap->x;
-		int32_t is_self, rpos = (uint32_t)r >> 1;
-		if (skip_seed(opt->flag, r, q, qname, 0, qlen, mi, &is_self)) continue;
-		if ((r&1) == (q->q_pos&1)) { // forward strand
-			p = &a[n_for++];
-			p->x = (r&0xffffffff00000000ULL) | rpos;
-			p->y = (uint64_t)q->q_span << 32 | q->q_pos >> 1;
-		} else { // reverse strand
-			p = &a[(*n_a) - (++n_rev)];
-			p->x = 1ULL<<63 | (r&0xffffffff00000000ULL) | rpos;
-			p->y = (uint64_t)q->q_span << 32 | (qlen - ((q->q_pos>>1) + 1 - q->q_span) - 1);
-		}
-		p->y |= (uint64_t)q->seg_id << MM_SEED_SEG_SHIFT;
-		if (q->is_tandem) p->y |= MM_SEED_TANDEM;
-		if (is_self) p->y |= MM_SEED_SELF;
-		// update the heap
-		if ((uint32_t)heap->y < q->n - 1) {
-			++heap[0].y;
-			heap[0].x = m[heap[0].y>>32].cr[(uint32_t)heap[0].y];
-		} else {
-			heap[0] = heap[heap_size - 1];
-			--heap_size;
-		}
-		ks_heapdown_heap(0, heap_size, heap);
-	}
-	kfree(km, m);
-	kfree(km, heap);
-
-	// reverse anchors on the reverse strand, as they are in the descending order
-	for (j = 0; j < n_rev>>1; ++j) {
-		mm128_t t = a[(*n_a) - 1 - j];
-		a[(*n_a) - 1 - j] = a[(*n_a) - (n_rev - j)];
-		a[(*n_a) - (n_rev - j)] = t;
-	}
-	if (*n_a > n_for + n_rev) {
-		memmove(a + n_for, a + (*n_a) - n_rev, n_rev * sizeof(mm128_t));
-		*n_a = n_for + n_rev;
-	}
-	return a;
-}
-
 static mm128_t *collect_seed_hits(void *km, const mm_mapopt_t *opt, int max_occ, const mm_idx_t *mi, const char *qname, const mm128_v *mv, unsigned int bid, int qlen, int64_t *n_a, int *rep_len,
 								  int *n_mini_pos, uint64_t **mini_pos)
 {
@@ -296,7 +231,7 @@ static mm_reg1_t *align_regs(const mm_mapopt_t *opt, const mm_idx_t *mi, void *k
 }
 
 #include "minimap.h"
-unsigned int dichotomy_sort(char *qname, rname_rid_t* ref_name, int ref_name_size)
+unsigned int dichotomy_sort(const char *qname, rname_rid_t* ref_name, int ref_name_size)
 {
     unsigned int start=0, end = ref_name_size-1, mid;
     int cmp;

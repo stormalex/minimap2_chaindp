@@ -166,9 +166,11 @@ int32_t mm_idx_cal_max_occ(const mm_idx_t *mi, float f)
 	return thres;
 }
 
-int cmp(rname_rid_t *r0, rname_rid_t *r1)
+int cmp(const void *r0, const void *r1)
 {
-    return strcmp(r0->rname, r1->rname);
+    rname_rid_t *a = (rname_rid_t *)r0;
+    rname_rid_t *b = (rname_rid_t *)r1;
+    return strcmp(a->rname, b->rname);
 }
 /*********************************
  * Sort and generate hash tables *
