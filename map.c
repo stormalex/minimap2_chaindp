@@ -297,13 +297,26 @@ void mm_map_frag(const mm_idx_t *mi, int n_segs, const int *qlens, const char **
 		if (max_chain_gap_ref < opt->max_gap) max_chain_gap_ref = opt->max_gap;
 	} else max_chain_gap_ref = opt->max_gap;
     
+    //为每一条read创建context_t
+    assert(params->read_contexts[read_id] == NULL);
+    /*context_t* context = (context_t*)malloc(sizeof(context_t));
+    memset(context, 0, sizeof(context_t));
+    params->read_contexts[read_id] = context;
+    context->km = b->km;
+    context->opt = opt;
+    context->mi = mi;
+    context->bid = bid;
+    context->qlen = qlen_sum;
+    context->max_chain_gap_ref = max_chain_gap_ref;
+    context->max_chain_gap_qry = max_chain_gap_qry;
+    context->is_splice = is_splice;
+    context->n_segs = n_segs;*/
+    
     //on fpga
     a = collect_seed_hits(b->km, opt, opt->mid_occ, mi, qname, &mv, bid, qlen_sum, &n_a, &rep_len, &n_mini_pos, &mini_pos);
-
 	//a = mm_chain_dp(max_chain_gap_ref, max_chain_gap_qry, opt->bw, opt->max_chain_skip, opt->min_cnt, opt->min_chain_score, is_splice, n_segs, n_a, a, &n_regs0, &u, b->km);
-	
     uint32_t new_i;
-    struct new_seed* fpga_a = mm_chain_dp_fpga(max_chain_gap_ref, max_chain_gap_qry, opt->bw, opt->max_chain_skip, opt->min_cnt, opt->min_chain_score, is_splice, n_segs, n_a, a, &n_regs0, &u, b->km, &new_i);
+    struct new_seed* fpga_a = mm_chain_dp_fpga(max_chain_gap_ref, max_chain_gap_qry, opt->bw, opt->max_chain_skip, opt->min_cnt, opt->min_chain_score, is_splice, n_segs, n_a, a, b->km, &new_i);
     
     a = mm_chain_dp_bottom(max_chain_gap_ref, max_chain_gap_qry, opt->bw, opt->max_chain_skip, opt->min_cnt, opt->min_chain_score, is_splice, n_segs, n_a, a, &n_regs0, &u, b->km, fpga_a, new_i);
 

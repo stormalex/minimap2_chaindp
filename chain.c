@@ -215,7 +215,7 @@ mm128_t *mm_chain_dp(int max_dist_x, int max_dist_y, int bw, int max_skip, int m
 	return b;
 }
 
-struct new_seed* mm_chain_dp_fpga(int max_dist_x, int max_dist_y, int bw, int max_skip, int min_cnt, int min_sc, int is_cdna, int n_segs, int64_t n, mm128_t *a, int *n_u_, uint64_t **_u, void *km, uint32_t* _new_i)
+struct new_seed* mm_chain_dp_fpga(int max_dist_x, int max_dist_y, int bw, int max_skip, int min_cnt, int min_sc, int is_cdna, int n_segs, int64_t n, mm128_t *a, void *km, uint32_t* _new_i)
 { // TODO: make sure this works when n has more than 32 bits
 	int32_t *f, *p, *t, *v;
 	int64_t i, j, st = 0;
