@@ -389,8 +389,8 @@ void mm_map_frag(const mm_idx_t *mi, int n_segs, const int *qlens, const char **
 	//a = mm_chain_dp(max_chain_gap_ref, max_chain_gap_qry, opt->bw, opt->max_chain_skip, opt->min_cnt, opt->min_chain_score, is_splice, n_segs, n_a, a, &n_regs0, &u, b->km);
     uint32_t new_i;
     struct new_seed* fpga_a = mm_chain_dp_fpga(max_chain_gap_ref, max_chain_gap_qry, opt->bw, opt->max_chain_skip, opt->min_cnt, opt->min_chain_score, is_splice, n_segs, n_a, a, b->km, &new_i);
-    fprintf(stderr, "n_a=%ld, new_i=%d\n", n_a, new_i);
-    a = mm_chain_dp_bottom(max_chain_gap_ref, max_chain_gap_qry, opt->bw, opt->max_chain_skip, opt->min_cnt, opt->min_chain_score, is_splice, n_segs, n_a, a, &n_regs0, &u, b->km, fpga_a, new_i);
+
+    a = mm_chain_dp_bottom(max_chain_gap_ref, max_chain_gap_qry, opt->bw, opt->max_chain_skip, opt->min_cnt, opt->min_chain_score, is_splice, n_segs, new_i, a, &n_regs0, &u, b->km, fpga_a, new_i);
 
 	if (opt->max_occ > opt->mid_occ && rep_len > 0) {
 		int rechain = 0;
