@@ -4,6 +4,9 @@
 #include "bseq.h"
 #include "minimap.h"
 #include "mmpriv.h"
+
+#include "fpga_chaindp.h"
+
 #ifdef HAVE_GETOPT
 #include <getopt.h>
 #else
@@ -104,6 +107,11 @@ int main(int argc, char *argv[])
 	mm_idx_reader_t *idx_rdr;
 	mm_idx_t *mi;
 
+    fprintf(stderr, "sizeof(collect_task_t)=%ld\n", sizeof(collect_task_t));
+    assert(sizeof(collect_task_t) == 64);
+    fprintf(stderr, "sizeof(chaindp_sndhdr_t)=%ld\n", sizeof(chaindp_sndhdr_t));
+    assert(sizeof(chaindp_sndhdr_t) == 64);
+    
 	mm_verbose = 3;
 	liftrlimit();
 	mm_realtime0 = realtime();

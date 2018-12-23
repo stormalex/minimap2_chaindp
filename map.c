@@ -9,6 +9,8 @@
 #include "bseq.h"
 #include "khash.h"
 
+#include "fpga_chaindp.h"
+
 struct mm_tbuf_s {
 	void *km;
 };
@@ -255,8 +257,47 @@ unsigned int dichotomy_sort(const char *qname, rname_rid_t* ref_name, int ref_na
     return start;
 }
 
+static void* package_task(collect_task_t** tasks, int num, int size)
+{
+    int data_size = size + sizeof(chaindp_sndhdr_t);
+    chaindp_sndhdr_t* head = NULL;      //包头指针
+    collect_task_t* sub_head = NULL;    //子头指针
+    char* p;
+    int i = 0;
+    if(num == 0)
+        return NULL;
+    
+    void * buf = malloc(data_size);
+    p = (char*)buf;
+    
+    head = (chaindp_sndhdr_t*)buf;
+    head->size = data_size;
+    head->num = num;
+    head->type = 3;
+    
+    p += sizeof(chaindp_sndhdr_t);      //跳过包头
+    sub_head = (collect_task_t*)p;
+    
+    for(i = 0; i < num; i++) {
+        *sub_head = *tasks[i];
+        p += sizeof(collect_task_t);    //移动p跳过子包头
+        memcpy(p, tasks[i]->mv_a, tasks[i]->seednum * sizeof(mm128_t));   
+        
+        int tmp_size = (tasks[i]->seednum * sizeof(mm128_t));
+        tmp_size = ADDR_ALIGN(tmp_size, 64);
+        
+        p += tmp_size;      //移动p跳过数据
+        sub_head = (collect_task_t*)p;
+        
+        free(tasks[i]);
+    }
+    
+    assert(p == (buf + data_size));
+    
+    return buf;
+}
 
-void mm_map_frag(const mm_idx_t *mi, int n_segs, const int *qlens, const char **seqs, int *n_regs, mm_reg1_t **regs, mm_tbuf_t *b, const mm_mapopt_t *opt, const char *qname, long read_id, user_params_t* params)
+void mm_map_frag(const mm_idx_t *mi, int n_segs, const int *qlens, const char **seqs, int *n_regs, mm_reg1_t **regs, mm_tbuf_t *b, const mm_mapopt_t *opt, const char *qname, long read_id, user_params_t* params, int tid)
 {
 	int i, j, rep_len, qlen_sum, n_regs0, n_mini_pos;
 	int max_chain_gap_qry, max_chain_gap_ref, is_splice = !!(opt->flag & MM_F_SPLICE), is_sr = !!(opt->flag & MM_F_SR);
@@ -268,8 +309,10 @@ void mm_map_frag(const mm_idx_t *mi, int n_segs, const int *qlens, const char **
 	mm_reg1_t *regs0;
 	km_stat_t kmst;
 
-    if(read_id < 0) {
+    if(read_id < 0 || tid < 0) {
         fprintf(stderr, "invalid read_id(%ld)\n", read_id);
+        assert(read_id >= 0);
+        assert(tid >= 0);
     }
     
 	for (i = 0, qlen_sum = 0; i < n_segs; ++i)
@@ -299,7 +342,7 @@ void mm_map_frag(const mm_idx_t *mi, int n_segs, const int *qlens, const char **
     
     //为每一条read创建context_t
     assert(params->read_contexts[read_id] == NULL);
-    /*context_t* context = (context_t*)malloc(sizeof(context_t));
+    context_t* context = (context_t*)malloc(sizeof(context_t));
     memset(context, 0, sizeof(context_t));
     params->read_contexts[read_id] = context;
     context->km = b->km;
@@ -310,14 +353,43 @@ void mm_map_frag(const mm_idx_t *mi, int n_segs, const int *qlens, const char **
     context->max_chain_gap_ref = max_chain_gap_ref;
     context->max_chain_gap_qry = max_chain_gap_qry;
     context->is_splice = is_splice;
-    context->n_segs = n_segs;*/
+    context->n_segs = n_segs;
+    
+    collect_task_t *task = (collect_task_t*)malloc(sizeof(collect_task_t));
+    memset(task, 0, sizeof(collect_task_t));
+    task->gap_qry = max_chain_gap_qry;
+    task->gap_ref = max_chain_gap_ref;
+    task->seednum = mv.n;
+    task->qlensum = qlen_sum;
+    task->read_id = read_id;
+    task->bid = bid;
+    task->n_segs = n_segs;
+    task->b = mi->b;
+    task->mv_a = mv.a;
+    
+    params->send_task[tid].tasks[params->send_task[tid].num] = task;
+    params->send_task[tid].num++;
+    params->send_task[tid].data_size += sizeof(collect_task_t);
+    int data_size = mv.n * sizeof(mm128_t);
+    data_size = ADDR_ALIGN(data_size, 64);
+    params->send_task[tid].data_size += data_size;
+    
+    //打包
+    void* buf = package_task(params->send_task[tid].tasks, params->send_task[tid].num, params->send_task[tid].data_size);
+    if(buf) {
+        params->send_task[tid].num = 0;
+        params->send_task[tid].data_size = 0;
+    }
+    
+    free(buf);
+    free(context);
     
     //on fpga
     a = collect_seed_hits(b->km, opt, opt->mid_occ, mi, qname, &mv, bid, qlen_sum, &n_a, &rep_len, &n_mini_pos, &mini_pos);
 	//a = mm_chain_dp(max_chain_gap_ref, max_chain_gap_qry, opt->bw, opt->max_chain_skip, opt->min_cnt, opt->min_chain_score, is_splice, n_segs, n_a, a, &n_regs0, &u, b->km);
     uint32_t new_i;
     struct new_seed* fpga_a = mm_chain_dp_fpga(max_chain_gap_ref, max_chain_gap_qry, opt->bw, opt->max_chain_skip, opt->min_cnt, opt->min_chain_score, is_splice, n_segs, n_a, a, b->km, &new_i);
-    
+    fprintf(stderr, "n_a=%ld, new_i=%d\n", n_a, new_i);
     a = mm_chain_dp_bottom(max_chain_gap_ref, max_chain_gap_qry, opt->bw, opt->max_chain_skip, opt->min_cnt, opt->min_chain_score, is_splice, n_segs, n_a, a, &n_regs0, &u, b->km, fpga_a, new_i);
 
 	if (opt->max_occ > opt->mid_occ && rep_len > 0) {
@@ -395,7 +467,7 @@ void mm_map_frag(const mm_idx_t *mi, int n_segs, const int *qlens, const char **
 mm_reg1_t *mm_map(const mm_idx_t *mi, int qlen, const char *seq, int *n_regs, mm_tbuf_t *b, const mm_mapopt_t *opt, const char *qname)
 {
 	mm_reg1_t *regs;
-	mm_map_frag(mi, 1, &qlen, &seq, n_regs, &regs, b, opt, qname, -1, NULL);
+	mm_map_frag(mi, 1, &qlen, &seq, n_regs, &regs, b, opt, qname, -1, NULL, -1);
 	return regs;
 }
 
@@ -438,9 +510,9 @@ static void worker_for(void *_data, long i, int tid, void* _params) // kt_for() 
 	}
 	if (s->p->opt->flag & MM_F_INDEPEND_SEG) {
 		for (j = 0; j < s->n_seg[i]; ++j)
-			mm_map_frag(s->p->mi, 1, &qlens[j], &qseqs[j], &s->n_reg[off+j], &s->reg[off+j], b, s->p->opt, s->seq[off+j].name, i, params);
+			mm_map_frag(s->p->mi, 1, &qlens[j], &qseqs[j], &s->n_reg[off+j], &s->reg[off+j], b, s->p->opt, s->seq[off+j].name, i, params, tid);
 	} else {
-		mm_map_frag(s->p->mi, s->n_seg[i], qlens, qseqs, &s->n_reg[off], &s->reg[off], b, s->p->opt, s->seq[off].name, i, params);
+		mm_map_frag(s->p->mi, s->n_seg[i], qlens, qseqs, &s->n_reg[off], &s->reg[off], b, s->p->opt, s->seq[off].name, i, params, tid);
 	}
 	for (j = 0; j < s->n_seg[i]; ++j) // flip the query strand and coordinate to the original read strand
 		if (s->n_seg[i] == 2 && ((j == 0 && (pe_ori>>1&1)) || (j == 1 && (pe_ori&1)))) {
@@ -503,10 +575,15 @@ static void *worker_pipeline(void *shared, int step, void *in)
         for(i = 0; i < p->n_threads; i++) {
             params.send_task[i].num = 0;
             params.send_task[i].size = SEND_ARRAY_MAX;
+            params.send_task[i].data_size = 0;
+            params.send_task[i].tasks = (collect_task_t**)malloc(SEND_ARRAY_MAX * sizeof(collect_task_t*));
         }
         
 		kt_for_map(p->n_threads, worker_for, in, ((step_t*)in)->n_frag, (void *)&params, NULL, NULL);
         
+        for(i = 0; i < p->n_threads; i++) {
+            free(params.send_task[i].tasks);
+        }
         free(params.send_task);
         free(params.read_results);
         free(params.read_is_complete);
