@@ -48,7 +48,7 @@ extern "C" {
 typedef struct { uint64_t x, y; } mm128_t;
 typedef struct { size_t n, m; mm128_t *a; } mm128_v;
 
-struct new_seed{
+struct new_seed {
     mm128_t seed;
     int32_t p;
     int32_t f;
@@ -158,6 +158,19 @@ typedef struct {
 		FILE *idx;
 	} fp;
 } mm_idx_reader_t;
+
+#include "fpga_chaindp.h"
+typedef struct {
+    long num;                           //read的总数，不会变
+    long read_num;                      //read的总数，会变
+    unsigned long zero_seed_num;        //seed为0的read数量
+    context_t** read_contexts;          //记录每条read的上下文指针
+    read_result_t* read_results;        //数组里的每一个元素记录一个read的结果
+    send_task_t*  send_task;            //待发送数据
+    char* read_is_complete;
+
+    int exit;                           //线程退出标志
+}user_params_t;
 
 // memory buffer for thread-local storage during mapping
 typedef struct mm_tbuf_s mm_tbuf_t;
@@ -297,7 +310,7 @@ void mm_tbuf_destroy(mm_tbuf_t *b);
  */
 mm_reg1_t *mm_map(const mm_idx_t *mi, int l_seq, const char *seq, int *n_regs, mm_tbuf_t *b, const mm_mapopt_t *opt, const char *name);
 
-void mm_map_frag(const mm_idx_t *mi, int n_segs, const int *qlens, const char **seqs, int *n_regs, mm_reg1_t **regs, mm_tbuf_t *b, const mm_mapopt_t *opt, const char *qname);
+void mm_map_frag(const mm_idx_t *mi, int n_segs, const int *qlens, const char **seqs, int *n_regs, mm_reg1_t **regs, mm_tbuf_t *b, const mm_mapopt_t *opt, const char *qname, long read_id, user_params_t* params);
 
 /**
  * Align a fasta/fastq file and print alignments to stdout

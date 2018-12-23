@@ -256,7 +256,7 @@ unsigned int dichotomy_sort(const char *qname, rname_rid_t* ref_name, int ref_na
 }
 
 
-void mm_map_frag(const mm_idx_t *mi, int n_segs, const int *qlens, const char **seqs, int *n_regs, mm_reg1_t **regs, mm_tbuf_t *b, const mm_mapopt_t *opt, const char *qname)
+void mm_map_frag(const mm_idx_t *mi, int n_segs, const int *qlens, const char **seqs, int *n_regs, mm_reg1_t **regs, mm_tbuf_t *b, const mm_mapopt_t *opt, const char *qname, long read_id, user_params_t* params)
 {
 	int i, j, rep_len, qlen_sum, n_regs0, n_mini_pos;
 	int max_chain_gap_qry, max_chain_gap_ref, is_splice = !!(opt->flag & MM_F_SPLICE), is_sr = !!(opt->flag & MM_F_SR);
@@ -268,6 +268,10 @@ void mm_map_frag(const mm_idx_t *mi, int n_segs, const int *qlens, const char **
 	mm_reg1_t *regs0;
 	km_stat_t kmst;
 
+    if(read_id < 0) {
+        fprintf(stderr, "invalid read_id(%ld)\n", read_id);
+    }
+    
 	for (i = 0, qlen_sum = 0; i < n_segs; ++i)
 		qlen_sum += qlens[i], n_regs[i] = 0, regs[i] = 0;
 
@@ -300,6 +304,7 @@ void mm_map_frag(const mm_idx_t *mi, int n_segs, const int *qlens, const char **
 	
     uint32_t new_i;
     struct new_seed* fpga_a = mm_chain_dp_fpga(max_chain_gap_ref, max_chain_gap_qry, opt->bw, opt->max_chain_skip, opt->min_cnt, opt->min_chain_score, is_splice, n_segs, n_a, a, &n_regs0, &u, b->km, &new_i);
+    
     a = mm_chain_dp_bottom(max_chain_gap_ref, max_chain_gap_qry, opt->bw, opt->max_chain_skip, opt->min_cnt, opt->min_chain_score, is_splice, n_segs, n_a, a, &n_regs0, &u, b->km, fpga_a, new_i);
 
 	if (opt->max_occ > opt->mid_occ && rep_len > 0) {
@@ -377,7 +382,7 @@ void mm_map_frag(const mm_idx_t *mi, int n_segs, const int *qlens, const char **
 mm_reg1_t *mm_map(const mm_idx_t *mi, int qlen, const char *seq, int *n_regs, mm_tbuf_t *b, const mm_mapopt_t *opt, const char *qname)
 {
 	mm_reg1_t *regs;
-	mm_map_frag(mi, 1, &qlen, &seq, n_regs, &regs, b, opt, qname);
+	mm_map_frag(mi, 1, &qlen, &seq, n_regs, &regs, b, opt, qname, -1, NULL);
 	return regs;
 }
 
@@ -402,8 +407,9 @@ typedef struct {
 	mm_tbuf_t **buf;
 } step_t;
 
-static void worker_for(void *_data, long i, int tid) // kt_for() callback
+static void worker_for(void *_data, long i, int tid, void* _params) // kt_for() callback
 {
+    user_params_t* params = (user_params_t*)_params;
     step_t *s = (step_t*)_data;
 	int qlens[MM_MAX_SEG], j, off = s->seg_off[i], pe_ori = s->p->opt->pe_ori;
 	const char *qseqs[MM_MAX_SEG];
@@ -419,9 +425,9 @@ static void worker_for(void *_data, long i, int tid) // kt_for() callback
 	}
 	if (s->p->opt->flag & MM_F_INDEPEND_SEG) {
 		for (j = 0; j < s->n_seg[i]; ++j)
-			mm_map_frag(s->p->mi, 1, &qlens[j], &qseqs[j], &s->n_reg[off+j], &s->reg[off+j], b, s->p->opt, s->seq[off+j].name);
+			mm_map_frag(s->p->mi, 1, &qlens[j], &qseqs[j], &s->n_reg[off+j], &s->reg[off+j], b, s->p->opt, s->seq[off+j].name, i, params);
 	} else {
-		mm_map_frag(s->p->mi, s->n_seg[i], qlens, qseqs, &s->n_reg[off], &s->reg[off], b, s->p->opt, s->seq[off].name);
+		mm_map_frag(s->p->mi, s->n_seg[i], qlens, qseqs, &s->n_reg[off], &s->reg[off], b, s->p->opt, s->seq[off].name, i, params);
 	}
 	for (j = 0; j < s->n_seg[i]; ++j) // flip the query strand and coordinate to the original read strand
 		if (s->n_seg[i] == 2 && ((j == 0 && (pe_ori>>1&1)) || (j == 1 && (pe_ori&1)))) {
@@ -469,7 +475,30 @@ static void *worker_pipeline(void *shared, int step, void *in)
 			return s;
 		} else free(s);
     } else if (step == 1) { // step 1: map
-		kt_for(p->n_threads, worker_for, in, ((step_t*)in)->n_frag);
+        int i = 0;
+        user_params_t params;
+        memset(&params, 0, sizeof(params));
+        params.read_num = ((step_t*)in)->n_frag;
+        params.read_contexts = (context_t**)malloc(params.read_num * sizeof(context_t*));
+        memset(params.read_contexts, 0, params.read_num * sizeof(context_t*));
+        params.read_is_complete = (char*)malloc(params.read_num);
+        memset(params.read_is_complete, 0, params.read_num);
+        params.read_results = (read_result_t*)malloc(params.read_num * sizeof(read_result_t));
+        memset(params.read_results, 0, params.read_num * sizeof(read_result_t));
+        params.send_task = (send_task_t*)malloc(p->n_threads * sizeof(send_task_t));
+        memset(params.send_task, 0, p->n_threads * sizeof(send_task_t));
+        for(i = 0; i < p->n_threads; i++) {
+            params.send_task[i].num = 0;
+            params.send_task[i].size = SEND_ARRAY_MAX;
+        }
+        
+		kt_for_map(p->n_threads, worker_for, in, ((step_t*)in)->n_frag, (void *)&params, NULL, NULL);
+        
+        free(params.send_task);
+        free(params.read_results);
+        free(params.read_is_complete);
+        free(params.read_contexts);
+        
 		return in;
     } else if (step == 2) { // step 2: output
 		void *km = 0;
