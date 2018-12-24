@@ -115,11 +115,11 @@ static mm_match_t *collect_matches(void *km, int *_n_m, int max_occ, const mm_id
 	return m;
 }
 
-static inline int skip_seed(int flag, uint64_t r, const mm_match_t *q, const char *qname, unsigned int bid, int qlen, const mm_idx_t *mi, int *is_self)
+static inline int skip_seed(int flag, uint64_t r, const mm_match_t *q, unsigned int bid, int qlen, const mm_idx_t *mi, int *is_self)
 {
 	*is_self = 0;
 
-	if (qname && (flag & (MM_F_NO_DIAG|MM_F_NO_DUAL))) {
+	if (flag & (MM_F_NO_DIAG|MM_F_NO_DUAL)) {
 		//const mm_idx_seq_t *s = &mi->seq[r>>32];
         int cmp = 0;
 #if 1
@@ -158,7 +158,7 @@ static inline int skip_seed(int flag, uint64_t r, const mm_match_t *q, const cha
 	return 0;
 }
 
-static mm128_t *collect_seed_hits(void *km, const mm_mapopt_t *opt, int max_occ, const mm_idx_t *mi, const char *qname, const mm128_v *mv, unsigned int bid, int qlen, int64_t *n_a, int *rep_len,
+static mm128_t *collect_seed_hits(void *km, const mm_mapopt_t *opt, int max_occ, const mm_idx_t *mi, const mm128_v *mv, unsigned int bid, int qlen, int64_t *n_a, int *rep_len,
 								  int *n_mini_pos, uint64_t **mini_pos)
 {
 	int i, k, n_m;
@@ -177,7 +177,7 @@ static mm128_t *collect_seed_hits(void *km, const mm_mapopt_t *opt, int max_occ,
 			int32_t rpos = (r[k]>>22) & 0x1fffff;
 			//fprintf(stderr,"get rpos OK\n");
 			mm128_t *p;
-			if (skip_seed(opt->flag, r[k], q, qname, bid, qlen, mi, &is_self)) continue;
+			if (skip_seed(opt->flag, r[k], q, bid, qlen, mi, &is_self)) continue;
 			//fprintf(stderr,"skip_seed OK\n");
 			p = &a[(*n_a)++];
 			//modified by LQX
@@ -388,7 +388,7 @@ void mm_map_frag(const mm_idx_t *mi, int n_segs, const int *qlens, const char **
     }
     
     //on fpga
-    a = collect_seed_hits(b->km, opt, opt->mid_occ, mi, qname, &mv, bid, qlen_sum, &n_a, &rep_len, &n_mini_pos, &mini_pos);
+    a = collect_seed_hits(b->km, opt, opt->mid_occ, mi, &mv, bid, qlen_sum, &n_a, &rep_len, &n_mini_pos, &mini_pos);
 	//a = mm_chain_dp(max_chain_gap_ref, max_chain_gap_qry, opt->bw, opt->max_chain_skip, opt->min_cnt, opt->min_chain_score, is_splice, n_segs, n_a, a, &n_regs0, &u, b->km);
     uint32_t new_i;
     struct new_seed* fpga_a = mm_chain_dp_fpga(max_chain_gap_ref, max_chain_gap_qry, opt->bw, opt->max_chain_skip, opt->min_cnt, opt->min_chain_score, is_splice, n_segs, n_a, a, b->km, &new_i);
@@ -415,7 +415,7 @@ void mm_map_frag(const mm_idx_t *mi, int n_segs, const int *qlens, const char **
 			kfree(b->km, mini_pos);
 			//if (opt->flag & MM_F_HEAP_SORT) a = collect_seed_hits_heap(b->km, opt, opt->max_occ, mi, qname, &mv, qlen_sum, &n_a, &rep_len, &n_mini_pos, &mini_pos);
 			//else 
-		a = collect_seed_hits(b->km, opt, opt->max_occ, mi, qname, &mv, bid, qlen_sum, &n_a, &rep_len, &n_mini_pos, &mini_pos);
+		a = collect_seed_hits(b->km, opt, opt->max_occ, mi, &mv, bid, qlen_sum, &n_a, &rep_len, &n_mini_pos, &mini_pos);
 			a = mm_chain_dp(max_chain_gap_ref, max_chain_gap_qry, opt->bw, opt->max_chain_skip, opt->min_cnt, opt->min_chain_score, is_splice, n_segs, n_a, a, &n_regs0, &u, b->km);
 		}
 	}
