@@ -319,13 +319,14 @@ struct new_seed* mm_chain_dp_fpga(int max_dist_x, int max_dist_y, int bw, int ma
     kfree(km, p);
     kfree(km, t);
     kfree(km, v);
+    kfree(km, a);
     kfree(km, fpga_id);
     *_new_i = new_i;
     //fpga off, output:fpga_a
     return fpga_a;
 }
 
-mm128_t *mm_chain_dp_bottom(int max_dist_x, int max_dist_y, int bw, int max_skip, int min_cnt, int min_sc, int is_cdna, int n_segs, mm128_t *a, int *n_u_, uint64_t **_u, void *km, struct new_seed* fpga_a, uint32_t new_i)
+mm128_t *mm_chain_dp_bottom(int max_dist_x, int max_dist_y, int bw, int max_skip, int min_cnt, int min_sc, int is_cdna, int n_segs, int *n_u_, uint64_t **_u, void *km, struct new_seed* fpga_a, uint32_t new_i)
 { // TODO: make sure this works when n has more than 32 bits
     int32_t *v, *t, n_v, k;
     int64_t i, j;
@@ -334,6 +335,7 @@ mm128_t *mm_chain_dp_bottom(int max_dist_x, int max_dist_y, int bw, int max_skip
     mm128_t *b, *w;
     uint64_t *u2;
     int64_t n = new_i;
+    mm128_t *a = NULL;
     
     if (_u) *_u = 0, *n_u_ = 0;
     v = (int32_t*)kmalloc(km, n * 4);
@@ -348,7 +350,7 @@ mm128_t *mm_chain_dp_bottom(int max_dist_x, int max_dist_y, int bw, int max_skip
         if (((fpga_a[i].p & 0x01) == 1) && (t[i] == 0))
 			++n_u;
 	if (n_u == 0) {
-		kfree(km, a); kfree(km, t); kfree(km, v);
+		kfree(km, t); kfree(km, v);
         free(fpga_a);
 		return 0;
 	}
@@ -412,6 +414,7 @@ mm128_t *mm_chain_dp_bottom(int max_dist_x, int max_dist_y, int bw, int max_skip
 		k += (int32_t)u[i];
 	}
 	radix_sort_128x(w, w + n_u);
+    a = (mm128_t*)kmalloc(km, n_v * sizeof(mm128_t));
 	u2 = (uint64_t*)kmalloc(km, n_u * 8);
 	for (i = k = 0; i < n_u; ++i) {
 		int32_t j = (int32_t)w[i].y, n = (int32_t)u[j];
@@ -421,6 +424,8 @@ mm128_t *mm_chain_dp_bottom(int max_dist_x, int max_dist_y, int bw, int max_skip
 	}
 	memcpy(u, u2, n_u * 8);
 	memcpy(b, a, k * sizeof(mm128_t)); // write _a_ to _b_ and deallocate _a_ because _a_ is oversized, sometimes a lot
-	kfree(km, a); kfree(km, w); kfree(km, u2);
+	kfree(km, a);
+    kfree(km, w);
+    kfree(km, u2);
 	return b;
 }
