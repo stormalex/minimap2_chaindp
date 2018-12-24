@@ -28,7 +28,7 @@ typedef struct __attribute__((__packed__)) _collect_task{
     int gap_ref;
     int seednum;
     int qlensum;
-    int read_id;    //文档里的ctxpos，这里填read id
+    unsigned int read_id;    //文档里的ctxpos，这里填read id
     unsigned int bid;
     int16_t n_segs;
     char b;      //mi->b

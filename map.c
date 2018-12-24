@@ -257,7 +257,7 @@ unsigned int dichotomy_sort(const char *qname, rname_rid_t* ref_name, int ref_na
     return start;
 }
 
-static void* package_task(collect_task_t** tasks, int num, int size)
+static void* package_task(collect_task_t** tasks, int num, int size, int* buf_size)
 {
     int data_size = size + sizeof(chaindp_sndhdr_t);
     chaindp_sndhdr_t* head = NULL;      //包头指针
@@ -293,6 +293,8 @@ static void* package_task(collect_task_t** tasks, int num, int size)
     }
     
     assert(p == (buf + data_size));
+    
+    *buf_size = data_size;
     
     return buf;
 }
@@ -375,14 +377,15 @@ void mm_map_frag(const mm_idx_t *mi, int n_segs, const int *qlens, const char **
     params->send_task[tid].data_size += data_size;
     
     //打包
-    void* buf = package_task(params->send_task[tid].tasks, params->send_task[tid].num, params->send_task[tid].data_size);
-    if(buf) {
-        params->send_task[tid].num = 0;
-        params->send_task[tid].data_size = 0;
+    if(params->send_task[tid].num >= 8) {
+        int size = 0;
+        void* buf = package_task(params->send_task[tid].tasks, params->send_task[tid].num, params->send_task[tid].data_size, &size);
+        if(buf) {
+            params->send_task[tid].num = 0;
+            params->send_task[tid].data_size = 0;
+        }
+        //发送到fpga发送线程
     }
-    
-    free(buf);
-    free(context);
     
     //on fpga
     a = collect_seed_hits(b->km, opt, opt->mid_occ, mi, qname, &mv, bid, qlen_sum, &n_a, &rep_len, &n_mini_pos, &mini_pos);
@@ -390,7 +393,7 @@ void mm_map_frag(const mm_idx_t *mi, int n_segs, const int *qlens, const char **
     uint32_t new_i;
     struct new_seed* fpga_a = mm_chain_dp_fpga(max_chain_gap_ref, max_chain_gap_qry, opt->bw, opt->max_chain_skip, opt->min_cnt, opt->min_chain_score, is_splice, n_segs, n_a, a, b->km, &new_i);
 
-    a = mm_chain_dp_bottom(max_chain_gap_ref, max_chain_gap_qry, opt->bw, opt->max_chain_skip, opt->min_cnt, opt->min_chain_score, is_splice, n_segs, new_i, a, &n_regs0, &u, b->km, fpga_a, new_i);
+    a = mm_chain_dp_bottom(max_chain_gap_ref, max_chain_gap_qry, opt->bw, opt->max_chain_skip, opt->min_cnt, opt->min_chain_score, is_splice, n_segs, a, &n_regs0, &u, b->km, fpga_a, new_i);
 
 	if (opt->max_occ > opt->mid_occ && rep_len > 0) {
 		int rechain = 0;

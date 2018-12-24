@@ -325,7 +325,7 @@ struct new_seed* mm_chain_dp_fpga(int max_dist_x, int max_dist_y, int bw, int ma
     return fpga_a;
 }
 
-mm128_t *mm_chain_dp_bottom(int max_dist_x, int max_dist_y, int bw, int max_skip, int min_cnt, int min_sc, int is_cdna, int n_segs, int64_t n, mm128_t *a, int *n_u_, uint64_t **_u, void *km, struct new_seed* fpga_a, uint32_t new_i)
+mm128_t *mm_chain_dp_bottom(int max_dist_x, int max_dist_y, int bw, int max_skip, int min_cnt, int min_sc, int is_cdna, int n_segs, mm128_t *a, int *n_u_, uint64_t **_u, void *km, struct new_seed* fpga_a, uint32_t new_i)
 { // TODO: make sure this works when n has more than 32 bits
     int32_t *v, *t, n_v, k;
     int64_t i, j;
@@ -333,6 +333,7 @@ mm128_t *mm_chain_dp_bottom(int max_dist_x, int max_dist_y, int bw, int max_skip
     uint64_t *u;
     mm128_t *b, *w;
     uint64_t *u2;
+    int64_t n = new_i;
     
     if (_u) *_u = 0, *n_u_ = 0;
     v = (int32_t*)kmalloc(km, n * 4);
