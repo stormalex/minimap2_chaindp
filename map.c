@@ -293,9 +293,6 @@ static void* package_task(collect_task_t** tasks, int num, int size, int* buf_si
         
         p += tmp_size;                  //移动p跳过数据
         sub_head = (collect_task_t*)p;
-        
-        free(tasks[i]->mv_a);
-        free(tasks[i]);
     }
     
     assert(p == (buf + data_size));
@@ -382,6 +379,9 @@ void mm_map_frag(const mm_idx_t *mi, int n_segs, const int *qlens, const char **
     memcpy(task->mv_a, mv.a, mv.n * sizeof(mm128_t));
 
     kfree(b->km, mv.a);
+    
+    assert(params->tasks[read_id] == NULL);
+    params->tasks[read_id] = task;
     
     params->send_task[tid].tasks[params->send_task[tid].num] = task;
     params->send_task[tid].num++;
@@ -618,6 +618,8 @@ static void *worker_pipeline(void *shared, int step, void *in)
             params.send_task[i].data_size = 0;
             params.send_task[i].tasks = (collect_task_t**)malloc(SEND_ARRAY_MAX * sizeof(collect_task_t*));
         }
+        params.tasks = (collect_task_t**)malloc(params.read_num * sizeof(collect_task_t*));
+        memset(params.tasks, 0, params.read_num * sizeof(collect_task_t*));
         
         params.exit = 1;
         
@@ -644,6 +646,7 @@ static void *worker_pipeline(void *shared, int step, void *in)
         for(i = 0; i < p->n_threads; i++) {
             free(params.send_task[i].tasks);
         }
+        free(params.tasks);
         free(params.send_task);
         free(params.read_results);
         free(params.read_is_complete);
@@ -855,27 +858,31 @@ void* result_thread(void* args)
             unsigned int read_id = out_sub_head->read_id;
             int rep_len = out_sub_head->rep_len;
             
+            if(out_sub_head->err_flag == 1) {   //硬件处理不了的数据，软件处理
+                assert(0);
+            }
+            
             context_t* context = params->read_contexts[read_id];
             
             ret = read_result_handle(context, n_minipos, mini_pos, fpga_a, new_i, rep_len, read_id);
             if(ret == 0) {  //正确处理，判断所有read是否处理完成
+                //销毁上下文
+                free(context);
+                params->read_contexts[read_id] = NULL;
+                
+                //销毁任务
+                free(params->tasks[read_id]->mv_a);
+                free(params->tasks[read_id]);
+                params->tasks[read_id] = NULL;
+                
                 long read_num_tmp = __sync_sub_and_fetch(&params->read_num, 1);
-                fprintf(stderr, "shenyu:%ld\n", read_num_tmp);
                 if(read_num_tmp == 0) { //所有read处理完成
-                    //销毁上下文数据
-                    free(context);
-                    params->read_contexts[read_id] = NULL;
-
                     free(result.buf);   //释放结果buf
                     params->exit = 0;
                     fprintf(stderr, "1.exit result_thread\n");
                     return NULL;
                 }
             }
-            //销毁上下文数据
-            free(context);
-            params->read_contexts[read_id] = NULL;
-            
             out_sub_head = (collect_result_t*)p;
         }
         free(result.buf);   //释放结果buf

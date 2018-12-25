@@ -162,6 +162,7 @@ typedef struct {
 struct _context;
 struct _read_result;
 struct _send_task;
+struct _collect_task;
 
 typedef struct {
     long num;                           //read的总数，不会变
@@ -171,7 +172,7 @@ typedef struct {
     struct _read_result* read_results;        //数组里的每一个元素记录一个read的结果
     struct _send_task*  send_task;            //待发送数据
     char* read_is_complete;
-    collect_task_t** tasks;                     //保存所有read的task，当接收到结果后才释放
+    struct _collect_task** tasks;                     //保存所有read的task，当接收到结果后才释放
 
     int exit;                           //线程退出标志
 }user_params_t;
