@@ -301,7 +301,7 @@ static void* package_task(collect_task_t** tasks, int num, int size, int* buf_si
     
     return buf;
 }
-static int read_count = 0;
+
 void mm_map_frag(const mm_idx_t *mi, int n_segs, const int *qlens, const char **seqs, int *n_regs, mm_reg1_t **regs, mm_tbuf_t *b, const mm_mapopt_t *opt, const char *qname, long read_id, user_params_t* params, int tid)
 {
 	int i, qlen_sum;
@@ -391,7 +391,7 @@ void mm_map_frag(const mm_idx_t *mi, int n_segs, const int *qlens, const char **
     params->send_task[tid].data_size += data_size;
     
     //打包
-    if(params->send_task[tid].num >= 1) {
+    if(params->send_task[tid].num >= 8) {
         int size = 0;
         void* buf = package_task(params->send_task[tid].tasks, params->send_task[tid].num, params->send_task[tid].data_size, &size);
         if(buf) {
@@ -402,9 +402,6 @@ void mm_map_frag(const mm_idx_t *mi, int n_segs, const int *qlens, const char **
         buf_info_t buf_info;
         buf_info.buf = buf;
         buf_info.size = size;
-        
-        read_count++;
-        fprintf(stderr, "read_count=%d\n", read_count);
         
         while(send_fpga_task(buf_info));
     }
@@ -417,6 +414,24 @@ void mm_map_frag(const mm_idx_t *mi, int n_segs, const int *qlens, const char **
             km_destroy(b->km);
             b->km = km_init();
         }
+    }
+}
+void last_send(void *data, int tid)
+{
+    user_params_t* params = (user_params_t*)data;
+    if(params->send_task[tid].num > 0) {
+        int size = 0;
+        void* buf = package_task(params->send_task[tid].tasks, params->send_task[tid].num, params->send_task[tid].data_size, &size);
+        if(buf) {
+            params->send_task[tid].num = 0;
+            params->send_task[tid].data_size = 0;
+        }
+        //发送到fpga发送线程
+        buf_info_t buf_info;
+        buf_info.buf = buf;
+        buf_info.size = size;
+        
+        while(send_fpga_task(buf_info));
     }
 }
 
@@ -568,6 +583,8 @@ static void worker_for(void *_data, long i, int tid, void* _params) // kt_for() 
 		}
 }
 
+void last_send(void *data, int tid);
+
 static void *worker_pipeline(void *shared, int step, void *in)
 {
 	int i, j, k;
@@ -637,8 +654,8 @@ static void *worker_pipeline(void *shared, int step, void *in)
         g_parm_issplic = !!(p->opt->flag & MM_F_SPLICE);
         g_parm_score = p->opt->min_chain_score;
         
-		//kt_for_map(p->n_threads, worker_for, in, ((step_t*)in)->n_frag, (void *)&params, NULL, NULL);
-        kt_for_map(p->n_threads - 10, worker_for, in, ((step_t*)in)->n_frag, (void *)&params, NULL, NULL);
+		//kt_for_map(p->n_threads, worker_for, in, ((step_t*)in)->n_frag, (void *)&params, last_send, NULL);
+        kt_for_map(p->n_threads - 10, worker_for, in, ((step_t*)in)->n_frag, (void *)&params, last_send, NULL);
         
         for(i = 0; i < 10; i++)
             pthread_join(result_tid[i], NULL);
