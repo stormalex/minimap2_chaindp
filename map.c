@@ -1,6 +1,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <assert.h>
+#include <pthread.h>
 #include "kthread.h"
 #include "kvec.h"
 #include "kalloc.h"
@@ -10,6 +11,12 @@
 #include "khash.h"
 
 #include "fpga_chaindp.h"
+
+void* result_thread(void* args);
+
+struct mm_idx_bucket_s;
+struct mm_idx_bucket_s *g_B = NULL;
+int32_t g_b = 0;
 
 struct mm_tbuf_s {
 	void *km;
@@ -81,19 +88,19 @@ typedef struct {
 	const uint64_t *cr;
 } mm_match_t;
 
-static mm_match_t *collect_matches(void *km, int *_n_m, int max_occ, const mm_idx_t *mi, const mm128_v *mv, int64_t *n_a, int *rep_len, int *n_mini_pos, uint64_t **mini_pos)
+static mm_match_t *collect_matches(int *_n_m, int max_occ, mm128_t *mv_a, size_t mv_n, int64_t *n_a, int *rep_len, int *n_mini_pos, uint64_t **mini_pos)
 {
 	int i, rep_st = 0, rep_en = 0, n_m;
 	mm_match_t *m;
 	*n_mini_pos = 0;
-	*mini_pos = (uint64_t*)kmalloc(km, mv->n * sizeof(uint64_t));
-	m = (mm_match_t*)kmalloc(km, mv->n * sizeof(mm_match_t));
-	for (i = n_m = 0, *rep_len = 0, *n_a = 0; i < mv->n; ++i) {
+	*mini_pos = (uint64_t*)malloc(mv_n * sizeof(uint64_t));
+	m = (mm_match_t*)malloc(mv_n * sizeof(mm_match_t));
+	for (i = n_m = 0, *rep_len = 0, *n_a = 0; i < mv_n; ++i) {
 		const uint64_t *cr;
-		mm128_t *p = &mv->a[i];
+		mm128_t *p = &mv_a[i];
 		uint32_t q_pos = (uint32_t)p->y, q_span = p->x & 0xff;
 		int t;
-		cr = mm_idx_get(mi, p->x>>8, &t);
+		cr = mm_idx_get(p->x>>8, &t);
 		if (t >= max_occ) {
 			int en = (q_pos >> 1) + 1, st = en - q_span;
 			if (st > rep_en) {
@@ -104,8 +111,8 @@ static mm_match_t *collect_matches(void *km, int *_n_m, int max_occ, const mm_id
 			mm_match_t *q = &m[n_m++];
 			q->q_pos = q_pos, q->q_span = q_span, q->cr = cr, q->n = t, q->seg_id = p->y >> 32;
 			q->is_tandem = 0;
-			if (i > 0 && p->x>>8 == mv->a[i - 1].x>>8) q->is_tandem = 1;
-			if (i < mv->n - 1 && p->x>>8 == mv->a[i + 1].x>>8) q->is_tandem = 1;
+			if (i > 0 && p->x>>8 == mv_a[i - 1].x>>8) q->is_tandem = 1;
+			if (i < mv_n - 1 && p->x>>8 == mv_a[i + 1].x>>8) q->is_tandem = 1;
 			*n_a += q->n;
 			(*mini_pos)[(*n_mini_pos)++] = (uint64_t)q_span<<32 | q_pos>>1;
 		}
@@ -115,15 +122,13 @@ static mm_match_t *collect_matches(void *km, int *_n_m, int max_occ, const mm_id
 	return m;
 }
 
-static inline int skip_seed(int flag, uint64_t r, const mm_match_t *q, unsigned int bid, int qlen, const mm_idx_t *mi, int *is_self)
+static inline int skip_seed(int flag, uint64_t r, const mm_match_t *q, unsigned int bid, int qlen, int *is_self)
 {
 	*is_self = 0;
 
-	if (flag & (MM_F_NO_DIAG|MM_F_NO_DUAL)) {
-		//const mm_idx_seq_t *s = &mi->seq[r>>32];
+	if (1 & flag & (MM_F_NO_DIAG|MM_F_NO_DUAL)) {
         int cmp = 0;
 #if 1
-        //int rankID = mi->rever_rid[r>>32];
 		uint32_t rankID = (uint32_t)r&0x1FFFFF;
         int flg = (bid &0x80000000)>>31;
         int val = bid  &0x7fffffff;
@@ -158,16 +163,16 @@ static inline int skip_seed(int flag, uint64_t r, const mm_match_t *q, unsigned 
 	return 0;
 }
 
-static mm128_t *collect_seed_hits(void *km, const mm_mapopt_t *opt, int max_occ, const mm_idx_t *mi, const mm128_v *mv, unsigned int bid, int qlen, int64_t *n_a, int *rep_len,
+static mm128_t *collect_seed_hits(int flag, int max_occ, mm128_t *mv_a, size_t mv_n, unsigned int bid, int qlen, int64_t *n_a, int *rep_len,
 								  int *n_mini_pos, uint64_t **mini_pos)
 {
 	int i, k, n_m;
 	mm_match_t *m;
 	mm128_t *a;
 	//fprintf(stderr,"collect_matches begin\n");
-	m = collect_matches(km, &n_m, max_occ, mi, mv, n_a, rep_len, n_mini_pos, mini_pos);
+	m = collect_matches(&n_m, max_occ, mv_a, mv_n, n_a, rep_len, n_mini_pos, mini_pos);
 	
-	a = (mm128_t*)kmalloc(km, *n_a * sizeof(mm128_t));
+	a = (mm128_t*)malloc(*n_a * sizeof(mm128_t));
 	for (i = 0, *n_a = 0; i < n_m; ++i) {
 		mm_match_t *q = &m[i];
 		const uint64_t *r = q->cr;
@@ -177,7 +182,7 @@ static mm128_t *collect_seed_hits(void *km, const mm_mapopt_t *opt, int max_occ,
 			int32_t rpos = (r[k]>>22) & 0x1fffff;
 			//fprintf(stderr,"get rpos OK\n");
 			mm128_t *p;
-			if (skip_seed(opt->flag, r[k], q, bid, qlen, mi, &is_self)) continue;
+			if (skip_seed(flag, r[k], q, bid, qlen, &is_self)) continue;
 			//fprintf(stderr,"skip_seed OK\n");
 			p = &a[(*n_a)++];
 			//modified by LQX
@@ -203,7 +208,7 @@ static mm128_t *collect_seed_hits(void *km, const mm_mapopt_t *opt, int max_occ,
 			if (is_self) p->y |= MM_SEED_SELF;
 		}
 	}
-	kfree(km, m);
+	free(m);
 	radix_sort_128x(a, a + (*n_a));
 	//fprintf(stderr,"seed num %d\n",*n_a);
 	return a;
@@ -286,9 +291,10 @@ static void* package_task(collect_task_t** tasks, int num, int size, int* buf_si
         int tmp_size = (tasks[i]->seednum * sizeof(mm128_t));
         tmp_size = ADDR_ALIGN(tmp_size, 64);
         
-        p += tmp_size;      //移动p跳过数据
+        p += tmp_size;                  //移动p跳过数据
         sub_head = (collect_task_t*)p;
         
+        free(tasks[i]->mv_a);
         free(tasks[i]);
     }
     
@@ -298,18 +304,14 @@ static void* package_task(collect_task_t** tasks, int num, int size, int* buf_si
     
     return buf;
 }
-
+static int read_count = 0;
 void mm_map_frag(const mm_idx_t *mi, int n_segs, const int *qlens, const char **seqs, int *n_regs, mm_reg1_t **regs, mm_tbuf_t *b, const mm_mapopt_t *opt, const char *qname, long read_id, user_params_t* params, int tid)
 {
-	int i, j, rep_len, qlen_sum, n_regs0, n_mini_pos;
+	int i, qlen_sum;
 	int max_chain_gap_qry, max_chain_gap_ref, is_splice = !!(opt->flag & MM_F_SPLICE), is_sr = !!(opt->flag & MM_F_SR);
 	uint32_t hash;
-	int64_t n_a;
-	uint64_t *u, *mini_pos;
-	mm128_t *a;
 	mm128_v mv = {0,0,0};
-	mm_reg1_t *regs0;
-	km_stat_t kmst;
+    km_stat_t kmst;
 
     if(read_id < 0 || tid < 0) {
         fprintf(stderr, "invalid read_id(%ld)\n", read_id);
@@ -347,15 +349,24 @@ void mm_map_frag(const mm_idx_t *mi, int n_segs, const int *qlens, const char **
     context_t* context = (context_t*)malloc(sizeof(context_t));
     memset(context, 0, sizeof(context_t));
     params->read_contexts[read_id] = context;
-    context->km = b->km;
+    context->b = b;
     context->opt = opt;
     context->mi = mi;
     context->bid = bid;
-    context->qlen = qlen_sum;
+    context->qlen_sum = qlen_sum;
     context->max_chain_gap_ref = max_chain_gap_ref;
     context->max_chain_gap_qry = max_chain_gap_qry;
     context->is_splice = is_splice;
     context->n_segs = n_segs;
+    context->hash = hash;
+    context->qlens = (int*)malloc(MM_MAX_SEG * sizeof(int));
+    memcpy(context->qlens, qlens, MM_MAX_SEG * sizeof(int));
+    context->is_sr = is_sr;
+    context->seqs = (char **)malloc(MM_MAX_SEG * sizeof(char *));
+    memcpy(context->seqs, seqs, MM_MAX_SEG * sizeof(char *));
+    context->n_regs = n_regs;
+    context->regs = regs;
+    context->qname = qname;
     
     collect_task_t *task = (collect_task_t*)malloc(sizeof(collect_task_t));
     memset(task, 0, sizeof(collect_task_t));
@@ -367,7 +378,10 @@ void mm_map_frag(const mm_idx_t *mi, int n_segs, const int *qlens, const char **
     task->bid = bid;
     task->n_segs = n_segs;
     task->b = mi->b;
-    task->mv_a = mv.a;
+    task->mv_a = (mm128_t*)malloc(mv.n * sizeof(mm128_t));
+    memcpy(task->mv_a, mv.a, mv.n * sizeof(mm128_t));
+
+    kfree(b->km, mv.a);
     
     params->send_task[tid].tasks[params->send_task[tid].num] = task;
     params->send_task[tid].num++;
@@ -377,7 +391,7 @@ void mm_map_frag(const mm_idx_t *mi, int n_segs, const int *qlens, const char **
     params->send_task[tid].data_size += data_size;
     
     //打包
-    if(params->send_task[tid].num >= 8) {
+    if(params->send_task[tid].num >= 1) {
         int size = 0;
         void* buf = package_task(params->send_task[tid].tasks, params->send_task[tid].num, params->send_task[tid].data_size, &size);
         if(buf) {
@@ -385,86 +399,109 @@ void mm_map_frag(const mm_idx_t *mi, int n_segs, const int *qlens, const char **
             params->send_task[tid].data_size = 0;
         }
         //发送到fpga发送线程
+        buf_info_t buf_info;
+        buf_info.buf = buf;
+        buf_info.size = size;
+        
+        read_count++;
+        fprintf(stderr, "read_count=%d\n", read_count);
+        
+        while(send_fpga_task(buf_info));
+    }
+    if (b->km) {
+        km_stat(b->km, &kmst);
+        if (mm_dbg_flag & MM_DBG_PRINT_QNAME)
+            fprintf(stderr, "QM\t%s\t%d\tcap=%ld,nCore=%ld,largest=%ld\n", qname, qlen_sum, kmst.capacity, kmst.n_cores, kmst.largest);
+        assert(kmst.n_blocks == kmst.n_cores); // otherwise, there is a memory leak
+        if (kmst.largest > 1U<<28) {
+            km_destroy(b->km);
+            b->km = km_init();
+        }
+    }
+}
+
+static int g_parm_flag = 0;
+static int g_parm_midocc = 0;
+static int g_parm_bw = 0;
+static int g_parm_skip = 0;
+static int g_parm_issplic = 0;
+static int g_parm_score = 0;
+
+void* fpga_work(void* buf, int size, int* result_size)
+{
+    int i = 0;
+    
+    chaindp_sndhdr_t* head = (chaindp_sndhdr_t*)buf;
+    collect_task_t* sub_head = (collect_task_t*)(buf + sizeof(chaindp_sndhdr_t));
+    char* p = (char*)sub_head;
+    assert(head->type == 3);
+    void* out_buf = malloc(16*1024*1024);
+    chaindp_sndhdr_t* out_head = (chaindp_sndhdr_t*)out_buf;
+    collect_result_t* out_sub_head = (collect_result_t*)(out_buf + sizeof(chaindp_sndhdr_t));
+    char* p2 = (char*)out_sub_head;
+    
+    //输出包的头信息设置
+    out_head->magic = head->magic;
+    out_head->tid = head->tid;
+    out_head->num = head->num;
+    out_head->type = head->type;
+    out_head->lat = head->lat;
+    
+    for(i = 0; i < head->num; i++) {
+        int tmp_size;
+        mm128_t *mv_a = (mm128_t*)(p + sizeof(collect_task_t));
+        size_t mv_n = sub_head->seednum;
+        unsigned int bid = sub_head->bid;
+        int qlen_sum = sub_head->qlensum;
+        int64_t n_a = 0;
+        int rep_len = 0;
+        int n_mini_pos = 0;
+        uint64_t* mini_pos;
+        
+        int max_chain_gap_ref = sub_head->gap_ref;
+        int max_chain_gap_qry = sub_head->gap_qry;
+        int n_segs = sub_head->gap_qry;
+        uint32_t new_i = 0;
+        
+        //on fpga
+        mm128_t *a = collect_seed_hits(g_parm_flag, g_parm_midocc, mv_a, mv_n, bid, qlen_sum, &n_a, &rep_len, &n_mini_pos, &mini_pos);
+        //a = mm_chain_dp(max_chain_gap_ref, max_chain_gap_qry, opt->bw, opt->max_chain_skip, opt->min_cnt, opt->min_chain_score, is_splice, n_segs, n_a, a, &n_regs0, &u, b->km);
+        struct new_seed* fpga_a = mm_chain_dp_fpga(max_chain_gap_ref, max_chain_gap_qry, g_parm_bw, g_parm_skip, g_parm_score, g_parm_issplic, n_segs, n_a, a, &new_i);
+        
+        out_sub_head->err_flag = 0;
+        out_sub_head->read_id = sub_head->read_id;
+        out_sub_head->n_a = new_i;
+        out_sub_head->n_minipos = n_mini_pos;
+        out_sub_head->rep_len = rep_len;
+        
+        //复制结果的fpga_a数组
+        struct new_seed* out_fpga_a = (struct new_seed*)(p2 + sizeof(collect_result_t));
+        memcpy(out_fpga_a, fpga_a, new_i * sizeof(struct new_seed));
+        free(fpga_a);
+        tmp_size = (new_i * sizeof(struct new_seed));
+        tmp_size = ADDR_ALIGN(tmp_size, 64);
+        p2 += (tmp_size + sizeof(collect_result_t));
+        
+        //复制结果的minipos数组
+        uint64_t* out_mini_pos = (uint64_t*)p2;
+        memcpy(out_mini_pos, mini_pos, n_mini_pos * sizeof(uint64_t));
+        free(mini_pos);
+        tmp_size = (n_mini_pos * sizeof(uint64_t));
+        tmp_size = ADDR_ALIGN(tmp_size, 64);
+        p2 += tmp_size;
+        
+        //移动任务的指针
+        tmp_size = (mv_n * sizeof(mm128_t));
+        tmp_size = ADDR_ALIGN(tmp_size, 64);
+        sub_head = (collect_task_t*)(p + sizeof(collect_task_t) + tmp_size);
+        p = (char*)sub_head;
+        
+        //移动结果的指针
+        out_sub_head = (collect_result_t*)p2;
     }
     
-    //on fpga
-    a = collect_seed_hits(b->km, opt, opt->mid_occ, mi, &mv, bid, qlen_sum, &n_a, &rep_len, &n_mini_pos, &mini_pos);
-	//a = mm_chain_dp(max_chain_gap_ref, max_chain_gap_qry, opt->bw, opt->max_chain_skip, opt->min_cnt, opt->min_chain_score, is_splice, n_segs, n_a, a, &n_regs0, &u, b->km);
-    uint32_t new_i;
-    struct new_seed* fpga_a = mm_chain_dp_fpga(max_chain_gap_ref, max_chain_gap_qry, opt->bw, opt->max_chain_skip, opt->min_cnt, opt->min_chain_score, is_splice, n_segs, n_a, a, b->km, &new_i);
-
-    a = mm_chain_dp_bottom(max_chain_gap_ref, max_chain_gap_qry, opt->bw, opt->max_chain_skip, opt->min_cnt, opt->min_chain_score, is_splice, n_segs, &n_regs0, &u, b->km, fpga_a, new_i);
-
-	if (opt->max_occ > opt->mid_occ && rep_len > 0) {
-		int rechain = 0;
-		if (n_regs0 > 0) { // test if the best chain has all the segments
-			int n_chained_segs = 1, max = 0, max_i = -1, max_off = -1, off = 0;
-			for (i = 0; i < n_regs0; ++i) { // find the best chain
-				if (max < u[i]>>32) max = u[i]>>32, max_i = i, max_off = off;
-				off += (uint32_t)u[i];
-			}
-			for (i = 1; i < (uint32_t)u[max_i]; ++i) // count the number of segments in the best chain
-				if ((a[max_off+i].y&MM_SEED_SEG_MASK) != (a[max_off+i-1].y&MM_SEED_SEG_MASK))
-					++n_chained_segs;
-			if (n_chained_segs < n_segs)
-				rechain = 1;
-		} else rechain = 1;
-		if (rechain) { // redo chaining with a higher max_occ threshold
-			kfree(b->km, a);
-			kfree(b->km, u);
-			kfree(b->km, mini_pos);
-			//if (opt->flag & MM_F_HEAP_SORT) a = collect_seed_hits_heap(b->km, opt, opt->max_occ, mi, qname, &mv, qlen_sum, &n_a, &rep_len, &n_mini_pos, &mini_pos);
-			//else 
-		a = collect_seed_hits(b->km, opt, opt->max_occ, mi, &mv, bid, qlen_sum, &n_a, &rep_len, &n_mini_pos, &mini_pos);
-			a = mm_chain_dp(max_chain_gap_ref, max_chain_gap_qry, opt->bw, opt->max_chain_skip, opt->min_cnt, opt->min_chain_score, is_splice, n_segs, n_a, a, &n_regs0, &u, b->km);
-		}
-	}
-
-	regs0 = mm_gen_regs(b->km, hash, qlen_sum, n_regs0, u, a);
-	//fprintf(stderr,"finish mm_gen_regs one read!\n");
-	if (mm_dbg_flag & MM_DBG_PRINT_SEED)
-		for (j = 0; j < n_regs0; ++j)
-			for (i = regs0[j].as; i < regs0[j].as + regs0[j].cnt; ++i)
-				fprintf(stderr, "CN\t%d\t%s\t%d\t%c\t%d\t%d\t%d\n", j, mi->seq[a[i].x<<1>>33].name, (int32_t)a[i].x, "+-"[a[i].x>>63], (int32_t)a[i].y, (int32_t)(a[i].y>>32&0xff),
-						i == regs0[j].as? 0 : ((int32_t)a[i].y - (int32_t)a[i-1].y) - ((int32_t)a[i].x - (int32_t)a[i-1].x));
-
-	chain_post(opt, max_chain_gap_ref, mi, b->km, qlen_sum, n_segs, qlens, &n_regs0, regs0, a);
-	
-	if (!is_sr) mm_est_err(mi, qlen_sum, n_regs0, regs0, a, n_mini_pos, mini_pos);
-
-	if (n_segs == 1) { // uni-segment
-		regs0 = align_regs(opt, mi, b->km, qlens[0], seqs[0], &n_regs0, regs0, a);
-		mm_set_mapq(b->km, n_regs0, regs0, opt->min_chain_score, opt->a, rep_len, is_sr);
-		n_regs[0] = n_regs0, regs[0] = regs0;
-	} else { // multi-segment
-		mm_seg_t *seg;
-		seg = mm_seg_gen(b->km, hash, n_segs, qlens, n_regs0, regs0, n_regs, regs, a); // split fragment chain to separate segment chains
-		free(regs0);
-		for (i = 0; i < n_segs; ++i) {
-			mm_set_parent(b->km, opt->mask_level, n_regs[i], regs[i], opt->a * 2 + opt->b); // update mm_reg1_t::parent
-			regs[i] = align_regs(opt, mi, b->km, qlens[i], seqs[i], &n_regs[i], regs[i], seg[i].a);
-			mm_set_mapq(b->km, n_regs[i], regs[i], opt->min_chain_score, opt->a, rep_len, is_sr);
-		}
-		mm_seg_free(b->km, n_segs, seg);
-		if (n_segs == 2 && opt->pe_ori >= 0 && (opt->flag&MM_F_CIGAR))
-			mm_pair(b->km, max_chain_gap_ref, opt->pe_bonus, opt->a * 2 + opt->b, opt->a, qlens, n_regs, regs); // pairing
-	}
-	
-	kfree(b->km, mv.a);
-	kfree(b->km, a);
-	kfree(b->km, u);
-	kfree(b->km, mini_pos);
-
-	if (b->km) {
-		km_stat(b->km, &kmst);
-		if (mm_dbg_flag & MM_DBG_PRINT_QNAME)
-			fprintf(stderr, "QM\t%s\t%d\tcap=%ld,nCore=%ld,largest=%ld\n", qname, qlen_sum, kmst.capacity, kmst.n_cores, kmst.largest);
-		assert(kmst.n_blocks == kmst.n_cores); // otherwise, there is a memory leak
-		if (kmst.largest > 1U<<28) {
-			km_destroy(b->km);
-			b->km = km_init();
-		}
-	}
+    *result_size = ((void*)p2 - out_buf);
+    return out_buf;
 }
 
 mm_reg1_t *mm_map(const mm_idx_t *mi, int qlen, const char *seq, int *n_regs, mm_tbuf_t *b, const mm_mapopt_t *opt, const char *qname)
@@ -582,7 +619,27 @@ static void *worker_pipeline(void *shared, int step, void *in)
             params.send_task[i].tasks = (collect_task_t**)malloc(SEND_ARRAY_MAX * sizeof(collect_task_t*));
         }
         
-		kt_for_map(p->n_threads, worker_for, in, ((step_t*)in)->n_frag, (void *)&params, NULL, NULL);
+        params.exit = 1;
+        
+        pthread_t result_tid[10];
+        for(i = 0; i < 10; i++) {
+            pthread_create(&result_tid[i], NULL, result_thread, &params);
+        }
+        
+        g_B = ((step_t*)in)->p->mi->B;      //软件模拟fpga的时候，将B设置到全局变量上
+        g_b = ((step_t*)in)->p->mi->b;
+        g_parm_flag = p->opt->flag;
+        g_parm_midocc = p->opt->mid_occ;
+        g_parm_bw = p->opt->bw;
+        g_parm_skip = p->opt->max_chain_skip;
+        g_parm_issplic = !!(p->opt->flag & MM_F_SPLICE);
+        g_parm_score = p->opt->min_chain_score;
+        
+		//kt_for_map(p->n_threads, worker_for, in, ((step_t*)in)->n_frag, (void *)&params, NULL, NULL);
+        kt_for_map(p->n_threads - 10, worker_for, in, ((step_t*)in)->n_frag, (void *)&params, NULL, NULL);
+        
+        for(i = 0; i < 10; i++)
+            pthread_join(result_tid[i], NULL);
         
         for(i = 0; i < p->n_threads; i++) {
             free(params.send_task[i].tasks);
@@ -670,4 +727,159 @@ int mm_map_file_frag(const mm_idx_t *idx, int n_segs, const char **fn, const mm_
 int mm_map_file(const mm_idx_t *idx, const char *fn, const mm_mapopt_t *opt, int n_threads)
 {
 	return mm_map_file_frag(idx, 1, &fn, opt, n_threads);
+}
+
+int read_result_handle(context_t* context, int n_minipos, uint64_t* mini_pos, struct new_seed* fpga_a, uint32_t new_i, int rep_len, unsigned int read_id)
+{
+    int i, j;
+    mm128_t *a = NULL;
+    int n_regs0;
+    uint64_t *u;
+    mm_reg1_t *regs0;
+    const mm_mapopt_t *opt = context->opt;
+    int n_segs = context->n_segs;
+    //struct mm_tbuf_s *b = context->b;
+    uint32_t hash = context->hash;
+    int qlen_sum = context->qlen_sum;
+    const mm_idx_t *mi = context->mi;
+    int max_chain_gap_ref = context->max_chain_gap_ref;
+    const int *qlens = context->qlens;
+    int is_sr = context->is_sr;
+    const char **seqs = context->seqs;
+    int *n_regs = context->n_regs;
+    mm_reg1_t **regs = context->regs;
+    //const char *qname = context->qname;
+    
+    a = mm_chain_dp_bottom(opt->min_cnt, opt->min_chain_score, n_segs, &n_regs0, &u, NULL, fpga_a, new_i);
+
+    /*if (opt->max_occ > opt->mid_occ && rep_len > 0) {
+        int rechain = 0;
+        if (n_regs0 > 0) { // test if the best chain has all the segments
+            int n_chained_segs = 1, max = 0, max_i = -1, max_off = -1, off = 0;
+            for (i = 0; i < n_regs0; ++i) { // find the best chain
+                if (max < u[i]>>32) max = u[i]>>32, max_i = i, max_off = off;
+                off += (uint32_t)u[i];
+            }
+            for (i = 1; i < (uint32_t)u[max_i]; ++i) // count the number of segments in the best chain
+                if ((a[max_off+i].y&MM_SEED_SEG_MASK) != (a[max_off+i-1].y&MM_SEED_SEG_MASK))
+                    ++n_chained_segs;
+            if (n_chained_segs < n_segs)
+                rechain = 1;
+        } else rechain = 1;
+        if (rechain) { // redo chaining with a higher max_occ threshold
+            //if (opt->flag & MM_F_HEAP_SORT) a = collect_seed_hits_heap(b->km, opt, opt->max_occ, mi, qname, &mv, qlen_sum, &n_a, &rep_len, &n_mini_pos, &mini_pos);
+            //else 
+            a = collect_seed_hits(opt->flag, opt->max_occ, &mv, bid, qlen_sum, &n_a, &rep_len, &n_mini_pos, &mini_pos);
+            a = mm_chain_dp(max_chain_gap_ref, max_chain_gap_qry, opt->bw, opt->max_chain_skip, opt->min_cnt, opt->min_chain_score, is_splice, n_segs, n_a, a, &n_regs0, &u, b->km);
+        }
+    }*/
+
+    regs0 = mm_gen_regs(NULL, hash, qlen_sum, n_regs0, u, a);
+    //fprintf(stderr,"finish mm_gen_regs one read!\n");
+    if (mm_dbg_flag & MM_DBG_PRINT_SEED)
+        for (j = 0; j < n_regs0; ++j)
+            for (i = regs0[j].as; i < regs0[j].as + regs0[j].cnt; ++i)
+                fprintf(stderr, "CN\t%d\t%s\t%d\t%c\t%d\t%d\t%d\n", j, mi->seq[a[i].x<<1>>33].name, (int32_t)a[i].x, "+-"[a[i].x>>63], (int32_t)a[i].y, (int32_t)(a[i].y>>32&0xff),
+                        i == regs0[j].as? 0 : ((int32_t)a[i].y - (int32_t)a[i-1].y) - ((int32_t)a[i].x - (int32_t)a[i-1].x));
+
+    chain_post(opt, max_chain_gap_ref, mi, NULL, qlen_sum, n_segs, qlens, &n_regs0, regs0, a);
+    
+    if (!is_sr) mm_est_err(mi, qlen_sum, n_regs0, regs0, a, n_minipos, mini_pos);
+
+    if (n_segs == 1) { // uni-segment
+        regs0 = align_regs(opt, mi, NULL, qlens[0], seqs[0], &n_regs0, regs0, a);
+        mm_set_mapq(NULL, n_regs0, regs0, opt->min_chain_score, opt->a, rep_len, is_sr);
+        n_regs[0] = n_regs0, regs[0] = regs0;
+    } else { // multi-segment
+        mm_seg_t *seg;
+        seg = mm_seg_gen(NULL, hash, n_segs, qlens, n_regs0, regs0, n_regs, regs, a); // split fragment chain to separate segment chains
+        free(regs0);
+        for (i = 0; i < n_segs; ++i) {
+            mm_set_parent(NULL, opt->mask_level, n_regs[i], regs[i], opt->a * 2 + opt->b); // update mm_reg1_t::parent
+            regs[i] = align_regs(opt, mi, NULL, qlens[i], seqs[i], &n_regs[i], regs[i], seg[i].a);
+            mm_set_mapq(NULL, n_regs[i], regs[i], opt->min_chain_score, opt->a, rep_len, is_sr);
+        }
+        mm_seg_free(NULL, n_segs, seg);
+        if (n_segs == 2 && opt->pe_ori >= 0 && (opt->flag&MM_F_CIGAR))
+            mm_pair(NULL, max_chain_gap_ref, opt->pe_bonus, opt->a * 2 + opt->b, opt->a, qlens, n_regs, regs); // pairing
+    }
+    free(context->qlens);
+    free(context->seqs);
+    if(a != NULL)
+        free(a);
+    if(u != NULL)
+        free(u);
+    /*if (b->km) {
+        km_stat(b->km, &kmst);
+        if (mm_dbg_flag & MM_DBG_PRINT_QNAME)
+            fprintf(stderr, "QM\t%s\t%d\tcap=%ld,nCore=%ld,largest=%ld\n", qname, qlen_sum, kmst.capacity, kmst.n_cores, kmst.largest);
+        assert(kmst.n_blocks == kmst.n_cores); // otherwise, there is a memory leak
+        if (kmst.largest > 1U<<28) {
+            km_destroy(b->km);
+            b->km = km_init();
+        }
+    }*/
+    return 0;
+}
+
+void* result_thread(void* args)
+{
+    int ret;
+    int i = 0;
+    user_params_t *params = (user_params_t *)args;
+    
+    buf_info_t result;
+    
+    while(params->exit) {
+        ret = get_fpga_result(&result);
+        if(ret == 1) {
+            continue;
+        }
+        
+        chaindp_sndhdr_t* out_head = (chaindp_sndhdr_t*)result.buf;
+        collect_result_t* out_sub_head = (collect_result_t*)(result.buf + sizeof(chaindp_sndhdr_t));
+    
+    
+        for(i = 0; i < out_head->num; i++) {
+            char* p = (char*)out_sub_head;
+            int n_minipos = out_sub_head->n_minipos;
+            uint32_t new_i = out_sub_head->n_a;
+            struct new_seed* fpga_a = (struct new_seed*)(p + sizeof(collect_result_t));
+            int tmp_size = new_i * sizeof(struct new_seed);
+            tmp_size = ADDR_ALIGN(tmp_size, 64);
+            p = p + sizeof(collect_result_t) + tmp_size;
+            uint64_t* mini_pos = (uint64_t*)p;
+            tmp_size = n_minipos * sizeof(uint64_t);
+            tmp_size = ADDR_ALIGN(tmp_size, 64);
+            p += tmp_size;
+            unsigned int read_id = out_sub_head->read_id;
+            int rep_len = out_sub_head->rep_len;
+            
+            context_t* context = params->read_contexts[read_id];
+            
+            ret = read_result_handle(context, n_minipos, mini_pos, fpga_a, new_i, rep_len, read_id);
+            if(ret == 0) {  //正确处理，判断所有read是否处理完成
+                long read_num_tmp = __sync_sub_and_fetch(&params->read_num, 1);
+                fprintf(stderr, "shenyu:%ld\n", read_num_tmp);
+                if(read_num_tmp == 0) { //所有read处理完成
+                    //销毁上下文数据
+                    free(context);
+                    params->read_contexts[read_id] = NULL;
+
+                    free(result.buf);   //释放结果buf
+                    params->exit = 0;
+                    fprintf(stderr, "1.exit result_thread\n");
+                    return NULL;
+                }
+            }
+            //销毁上下文数据
+            free(context);
+            params->read_contexts[read_id] = NULL;
+            
+            out_sub_head = (collect_result_t*)p;
+        }
+        free(result.buf);   //释放结果buf
+    }
+    fprintf(stderr, "2.exit result_thread\n");
+    return NULL;
 }

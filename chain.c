@@ -215,7 +215,7 @@ mm128_t *mm_chain_dp(int max_dist_x, int max_dist_y, int bw, int max_skip, int m
 	return b;
 }
 
-struct new_seed* mm_chain_dp_fpga(int max_dist_x, int max_dist_y, int bw, int max_skip, int min_cnt, int min_sc, int is_cdna, int n_segs, int64_t n, mm128_t *a, void *km, uint32_t* _new_i)
+struct new_seed* mm_chain_dp_fpga(int max_dist_x, int max_dist_y, int bw, int max_skip, int min_sc, int is_cdna, int n_segs, int64_t n, mm128_t *a, uint32_t* _new_i)
 { // TODO: make sure this works when n has more than 32 bits
 	int32_t *f, *p, *t, *v;
 	int64_t i, j, st = 0;
@@ -225,11 +225,11 @@ struct new_seed* mm_chain_dp_fpga(int max_dist_x, int max_dist_y, int bw, int ma
     int32_t *fpga_id = NULL;
 
 	
-	f = (int32_t*)kmalloc(km, n * 4);
-	p = (int32_t*)kmalloc(km, n * 4);
-	t = (int32_t*)kmalloc(km, n * 4);
-	v = (int32_t*)kmalloc(km, n * 4);
-    fpga_id = (int32_t*)kmalloc(km, n * sizeof(int32_t));
+	f = (int32_t*)malloc(n * 4);
+	p = (int32_t*)malloc(n * 4);
+	t = (int32_t*)malloc(n * 4);
+	v = (int32_t*)malloc(n * 4);
+    fpga_id = (int32_t*)malloc(n * sizeof(int32_t));
     fpga_a = (struct new_seed*)malloc(n * sizeof(struct new_seed));
 	memset(t, 0, n * 4);
     //memset(fpga_id, 0xff, n * sizeof(int32_t));
@@ -315,18 +315,18 @@ struct new_seed* mm_chain_dp_fpga(int max_dist_x, int max_dist_y, int bw, int ma
             new_i++;
         }
     }
-    kfree(km, f);
-    kfree(km, p);
-    kfree(km, t);
-    kfree(km, v);
-    kfree(km, a);
-    kfree(km, fpga_id);
+    free(f);
+    free(p);
+    free(t);
+    free(v);
+    free(a);
+    free(fpga_id);
     *_new_i = new_i;
     //fpga off, output:fpga_a
     return fpga_a;
 }
 
-mm128_t *mm_chain_dp_bottom(int max_dist_x, int max_dist_y, int bw, int max_skip, int min_cnt, int min_sc, int is_cdna, int n_segs, int *n_u_, uint64_t **_u, void *km, struct new_seed* fpga_a, uint32_t new_i)
+mm128_t *mm_chain_dp_bottom(int min_cnt, int min_sc, int n_segs, int *n_u_, uint64_t **_u, void *km, struct new_seed* fpga_a, uint32_t new_i)
 { // TODO: make sure this works when n has more than 32 bits
     int32_t *v, *t, n_v, k;
     int64_t i, j;
@@ -338,8 +338,8 @@ mm128_t *mm_chain_dp_bottom(int max_dist_x, int max_dist_y, int bw, int max_skip
     mm128_t *a = NULL;
     
     if (_u) *_u = 0, *n_u_ = 0;
-    v = (int32_t*)kmalloc(km, n * 4);
-    t = (int32_t*)kmalloc(km, n * 4);
+    v = (int32_t*)malloc(n * 4);
+    t = (int32_t*)malloc(n * 4);
 	// find the ending positions of chains
 	memset(t, 0, n * 4);
 	for (i = 0; i < new_i; ++i)
@@ -350,12 +350,12 @@ mm128_t *mm_chain_dp_bottom(int max_dist_x, int max_dist_y, int bw, int max_skip
         if (((fpga_a[i].p & 0x01) == 1) && (t[i] == 0))
 			++n_u;
 	if (n_u == 0) {
-		kfree(km, t); kfree(km, v);
-        free(fpga_a);
+		free(t);
+        free(v);
 		return 0;
 	}
     
-	u = (uint64_t*)kmalloc(km, n_u * 8);
+	u = (uint64_t*)malloc(n_u * 8);
 	for (i = n_u = 0; i < new_i; ++i) {
 		//if (t[i] == 0 && v[i] >= min_sc) {
         if (((fpga_a[i].p & 0x01) == 1) && (t[i] == 0)) {
@@ -394,28 +394,28 @@ mm128_t *mm_chain_dp_bottom(int max_dist_x, int max_dist_y, int bw, int max_skip
 
 	// free temporary arrays
 	//kfree(km, f); kfree(km, p);
-    kfree(km, t);
+    free(t);
 
 	// write the result to b[]
-	b = (mm128_t*)kmalloc(km, n_v * sizeof(mm128_t));
+	b = (mm128_t*)malloc(n_v * sizeof(mm128_t));
 	for (i = 0, k = 0; i < n_u; ++i) {
 		int32_t k0 = k, ni = (int32_t)u[i];
 		for (j = 0; j < ni; ++j)
 			b[k] = fpga_a[v[k0 + (ni - j - 1)]].seed, ++k;
 	}
-	kfree(km, v);
+	free(v);
     
-    free(fpga_a);
+    //free(fpga_a);
 
 	// sort u[] and a[] by a[].x, such that adjacent chains may be joined (required by mm_join_long)
-	w = (mm128_t*)kmalloc(km, n_u * sizeof(mm128_t));
+	w = (mm128_t*)malloc(n_u * sizeof(mm128_t));
 	for (i = k = 0; i < n_u; ++i) {
 		w[i].x = b[k].x, w[i].y = (uint64_t)k<<32|i;
 		k += (int32_t)u[i];
 	}
 	radix_sort_128x(w, w + n_u);
-    a = (mm128_t*)kmalloc(km, n_v * sizeof(mm128_t));
-	u2 = (uint64_t*)kmalloc(km, n_u * 8);
+    a = (mm128_t*)malloc(n_v * sizeof(mm128_t));
+	u2 = (uint64_t*)malloc(n_u * 8);
 	for (i = k = 0; i < n_u; ++i) {
 		int32_t j = (int32_t)w[i].y, n = (int32_t)u[j];
 		u2[i] = u[j];
@@ -424,8 +424,8 @@ mm128_t *mm_chain_dp_bottom(int max_dist_x, int max_dist_y, int bw, int max_skip
 	}
 	memcpy(u, u2, n_u * 8);
 	memcpy(b, a, k * sizeof(mm128_t)); // write _a_ to _b_ and deallocate _a_ because _a_ is oversized, sometimes a lot
-	kfree(km, a);
-    kfree(km, w);
-    kfree(km, u2);
+	free(a);
+    free(w);
+    free(u2);
 	return b;
 }

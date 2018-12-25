@@ -31,6 +31,9 @@ typedef struct mm_idx_bucket_s {
 	void *h;     // hash table indexing _p_ and minimizers appearing once
 } mm_idx_bucket_t;
 
+extern struct mm_idx_bucket_s *g_B;
+extern int32_t g_b;
+
 mm_idx_t *mm_idx_init(int w, int k, int b, int flag)
 {
 	mm_idx_t *mi;
@@ -61,15 +64,15 @@ void mm_idx_destroy(mm_idx_t *mi)
 	free(mi->B); free(mi->S); free(mi);
 }
 
-const uint64_t *mm_idx_get(const mm_idx_t *mi, uint64_t minier, int *n)
+const uint64_t *mm_idx_get(uint64_t minier, int *n)
 {
-	int mask = (1<<mi->b) - 1;
+	int mask = (1<<g_b) - 1;
 	khint_t k;
-	mm_idx_bucket_t *b = &mi->B[minier&mask];
+	mm_idx_bucket_t *b = &g_B[minier&mask];
 	idxhash_t *h = (idxhash_t*)b->h;
 	*n = 0;
 	if (h == 0) return 0;
-	k = kh_get(idx, h, minier>>mi->b<<1);
+	k = kh_get(idx, h, minier>>g_b<<1);
 	if (k == kh_end(h)) return 0;
 	if (kh_key(h, k)&1) { // special casing when there is only one k-mer
 		*n = 1;

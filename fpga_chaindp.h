@@ -1,20 +1,33 @@
 #ifndef __FPGA_CHAINDP_H__
 #define __FPGA_CHAINDP_H__
 
+#include <stdint.h>
+#include "minimap.h"
+
+#define FPGA_ON 0
+
 #define SEND_ARRAY_MAX  1024
 
 #define ADDR_ALIGN(addr, align)   (((addr)+(align)-1)&(~((align)-1)))
 
+struct mm_tbuf_s;
 typedef struct _context{
-    void *km;
+    struct mm_tbuf_s *b;
     const mm_mapopt_t *opt;
     const mm_idx_t *mi;
     unsigned int bid;
-    int qlen;
+    int qlen_sum;
     int max_chain_gap_qry;
     int max_chain_gap_ref;
     int is_splice;
     int n_segs;
+    uint32_t hash;
+    int *qlens;
+    int is_sr;
+    char **seqs;
+    int *n_regs;
+    mm_reg1_t **regs;
+    const char *qname;
 }context_t;
 
 typedef struct _read_result{
@@ -37,6 +50,16 @@ typedef struct __attribute__((__packed__)) _collect_task{
     char reserve2[28];
 }collect_task_t;
 
+typedef struct __attribute__((__packed__)) _collect_result{
+    unsigned int err_flag;
+    unsigned int read_id;
+    unsigned int sub_size;
+    unsigned int n_a;
+    unsigned int n_minipos;
+    unsigned int rep_len;
+    char reserve1[40];
+}collect_result_t;
+
 typedef struct _send_task{
     int num;
     int size;
@@ -56,4 +79,25 @@ typedef struct __attribute__((__packed__)) _chaindp_sndhdr{
     uint8_t reserve1[50];
 }chaindp_sndhdr_t;
 
+typedef struct _buf_info{
+    void* buf;
+    int size;
+}buf_info_t;
+
+
+int send_fpga_task(buf_info_t task);
+int get_fpga_task(buf_info_t* task);
+
+void init_fpga_task_array();
+void stop_fpga_send_thread();
+void* send_task_thread(void* arg);
+
+void init_fpga_result_array();
+void stop_fpga_recv_thread();
+void* recv_task_thread(void* arg);
+
+int send_fpga_task(buf_info_t task);
+int get_fpga_task(buf_info_t* task);
+int send_fpga_result(buf_info_t result);
+int get_fpga_result(buf_info_t* result);
 #endif //__FPGA_CHAINDP_H__

@@ -1,6 +1,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+#include <pthread.h>
 #include "bseq.h"
 #include "minimap.h"
 #include "mmpriv.h"
@@ -111,6 +112,8 @@ int main(int argc, char *argv[])
     assert(sizeof(collect_task_t) == 64);
     fprintf(stderr, "sizeof(chaindp_sndhdr_t)=%ld\n", sizeof(chaindp_sndhdr_t));
     assert(sizeof(chaindp_sndhdr_t) == 64);
+    fprintf(stderr, "sizeof(collect_result_t)=%ld\n", sizeof(collect_result_t));
+    assert(sizeof(collect_result_t) == 64);
     
 	mm_verbose = 3;
 	liftrlimit();
@@ -318,7 +321,14 @@ int main(int argc, char *argv[])
 	}
 	if (opt.best_n == 0 && (opt.flag&MM_F_CIGAR) && mm_verbose >= 2)
 		fprintf(stderr, "[WARNING]\033[1;31m `-N 0' reduces alignment accuracy. Please use --secondary=no to suppress secondary alignments.\033[0m\n");
-	while ((mi = mm_idx_reader_read(idx_rdr, n_threads)) != 0) {
+	
+    pthread_t send_tid, recv_tid;
+    init_fpga_task_array();
+    init_fpga_result_array();
+    pthread_create(&send_tid, NULL, send_task_thread, NULL);
+    pthread_create(&recv_tid, NULL, recv_task_thread, NULL);
+    
+    while ((mi = mm_idx_reader_read(idx_rdr, n_threads)) != 0) {
 		if ((opt.flag & MM_F_CIGAR) && (mi->flag & MM_I_NO_SEQ)) {
 			fprintf(stderr, "[ERROR] the prebuilt index doesn't contain sequences.\n");
 			mm_idx_destroy(mi);
@@ -356,6 +366,11 @@ int main(int argc, char *argv[])
 	}
 	mm_idx_reader_close(idx_rdr);
 
+    stop_fpga_send_thread();
+    stop_fpga_recv_thread();
+    pthread_join(send_tid, NULL);
+    pthread_join(recv_tid, NULL);
+    
 	if (fflush(stdout) == EOF) {
 		fprintf(stderr, "[ERROR] failed to write the results\n");
 		exit(EXIT_FAILURE);

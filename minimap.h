@@ -159,15 +159,19 @@ typedef struct {
 	} fp;
 } mm_idx_reader_t;
 
-#include "fpga_chaindp.h"
+struct _context;
+struct _read_result;
+struct _send_task;
+
 typedef struct {
     long num;                           //read的总数，不会变
     long read_num;                      //read的总数，会变
     unsigned long zero_seed_num;        //seed为0的read数量
-    context_t** read_contexts;          //记录每条read的上下文指针
-    read_result_t* read_results;        //数组里的每一个元素记录一个read的结果
-    send_task_t*  send_task;            //待发送数据
+    struct _context** read_contexts;          //记录每条read的上下文指针
+    struct _read_result* read_results;        //数组里的每一个元素记录一个read的结果
+    struct _send_task*  send_task;            //待发送数据
     char* read_is_complete;
+    collect_task_t** tasks;                     //保存所有read的task，当接收到结果后才释放
 
     int exit;                           //线程退出标志
 }user_params_t;
