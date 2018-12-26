@@ -14,9 +14,18 @@
 
 void* result_thread(void* args);
 
+#if !FPGA_ON
 struct mm_idx_bucket_s;
 struct mm_idx_bucket_s *g_B = NULL;
 int32_t g_b = 0;
+#endif
+static int g_parm_flag = 0;
+static int g_parm_midocc = 0;
+static int g_parm_bw = 0;
+static int g_parm_skip = 0;
+static int g_parm_issplic = 0;
+static int g_parm_score = 0;
+
 
 struct mm_tbuf_s {
 	void *km;
@@ -435,13 +444,6 @@ void last_send(void *data, int tid)
     }
 }
 
-static int g_parm_flag = 0;
-static int g_parm_midocc = 0;
-static int g_parm_bw = 0;
-static int g_parm_skip = 0;
-static int g_parm_issplic = 0;
-static int g_parm_score = 0;
-
 void* fpga_work(void* buf, int size, int* result_size)
 {
     int i = 0;
@@ -471,12 +473,14 @@ void* fpga_work(void* buf, int size, int* result_size)
         int64_t n_a = 0;
         int rep_len = 0;
         int n_mini_pos = 0;
-        uint64_t* mini_pos;
+        uint64_t* mini_pos = NULL;
         
         int max_chain_gap_ref = sub_head->gap_ref;
         int max_chain_gap_qry = sub_head->gap_qry;
         int n_segs = sub_head->gap_qry;
         uint32_t new_i = 0;
+        
+        int out_size = 0;
         
         //on fpga
         mm128_t *a = collect_seed_hits(g_parm_flag, g_parm_midocc, mv_a, mv_n, bid, qlen_sum, &n_a, &rep_len, &n_mini_pos, &mini_pos);
@@ -489,6 +493,8 @@ void* fpga_work(void* buf, int size, int* result_size)
         out_sub_head->n_minipos = n_mini_pos;
         out_sub_head->rep_len = rep_len;
         
+        out_size += sizeof(collect_result_t);
+        
         //复制结果的fpga_a数组
         struct new_seed* out_fpga_a = (struct new_seed*)(p2 + sizeof(collect_result_t));
         memcpy(out_fpga_a, fpga_a, new_i * sizeof(struct new_seed));
@@ -497,6 +503,8 @@ void* fpga_work(void* buf, int size, int* result_size)
         tmp_size = ADDR_ALIGN(tmp_size, 64);
         p2 += (tmp_size + sizeof(collect_result_t));
         
+        out_size += tmp_size;
+        
         //复制结果的minipos数组
         uint64_t* out_mini_pos = (uint64_t*)p2;
         memcpy(out_mini_pos, mini_pos, n_mini_pos * sizeof(uint64_t));
@@ -504,6 +512,9 @@ void* fpga_work(void* buf, int size, int* result_size)
         tmp_size = (n_mini_pos * sizeof(uint64_t));
         tmp_size = ADDR_ALIGN(tmp_size, 64);
         p2 += tmp_size;
+        
+        out_size += tmp_size;
+        out_sub_head->sub_size = out_size;
         
         //移动任务的指针
         tmp_size = (mv_n * sizeof(mm128_t));
@@ -644,16 +655,17 @@ static void *worker_pipeline(void *shared, int step, void *in)
         for(i = 0; i < 10; i++) {
             pthread_create(&result_tid[i], NULL, result_thread, &params);
         }
-        
+#if !FPGA_ON
         g_B = ((step_t*)in)->p->mi->B;      //软件模拟fpga的时候，将B设置到全局变量上
         g_b = ((step_t*)in)->p->mi->b;
+#endif
         g_parm_flag = p->opt->flag;
         g_parm_midocc = p->opt->mid_occ;
         g_parm_bw = p->opt->bw;
         g_parm_skip = p->opt->max_chain_skip;
         g_parm_issplic = !!(p->opt->flag & MM_F_SPLICE);
         g_parm_score = p->opt->min_chain_score;
-        
+
 		//kt_for_map(p->n_threads, worker_for, in, ((step_t*)in)->n_frag, (void *)&params, last_send, NULL);
         kt_for_map(p->n_threads - 10, worker_for, in, ((step_t*)in)->n_frag, (void *)&params, last_send, NULL);
         
@@ -765,7 +777,7 @@ int read_result_handle(context_t* context, int n_minipos, uint64_t* mini_pos, st
     int max_chain_gap_ref = context->max_chain_gap_ref;
     const int *qlens = context->qlens;
     int is_sr = context->is_sr;
-    const char **seqs = context->seqs;
+    char **seqs = context->seqs;
     int *n_regs = context->n_regs;
     mm_reg1_t **regs = context->regs;
     //const char *qname = context->qname;
@@ -876,13 +888,22 @@ void* result_thread(void* args)
             int rep_len = out_sub_head->rep_len;
             
             if(out_sub_head->err_flag == 1) {   //硬件处理不了的数据，软件处理
-                assert(0);
+                fprintf(stderr, "soft process\n");
+                collect_task_t* task = params->tasks[read_id];
+                int64_t n_a = 0;
+                //on fpga
+                mm128_t *a = collect_seed_hits(g_parm_flag, g_parm_midocc, task->mv_a, task->seednum, task->bid, task->qlensum, &n_a, &rep_len, &n_minipos, &mini_pos);
+                fpga_a = mm_chain_dp_fpga(task->gap_ref, task->gap_qry, g_parm_bw, g_parm_skip, g_parm_score, g_parm_issplic, task->n_segs, n_a, a, &new_i);
             }
             
             context_t* context = params->read_contexts[read_id];
             
             ret = read_result_handle(context, n_minipos, mini_pos, fpga_a, new_i, rep_len, read_id);
             if(ret == 0) {  //正确处理，判断所有read是否处理完成
+                if(out_sub_head->err_flag == 1) {   //如果是软件处理，则将生成的结果释放
+                    free(fpga_a);
+                    free(mini_pos);
+                }
                 //销毁上下文
                 free(context);
                 params->read_contexts[read_id] = NULL;
@@ -900,7 +921,10 @@ void* result_thread(void* args)
                     return NULL;
                 }
             }
-            out_sub_head = (collect_result_t*)p;
+            if(out_sub_head->err_flag == 1)
+                out_sub_head++;
+            else
+                out_sub_head = (collect_result_t*)p;
         }
         free(result.buf);   //释放结果buf
     }
