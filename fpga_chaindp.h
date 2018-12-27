@@ -8,6 +8,9 @@
 
 #define SEND_ARRAY_MAX  1024
 
+#define INDEX_BUF_SIZE  256*1024*1024    //256M
+#define INDEX_LOAD_SIZE  4*1024*1024    //256M
+
 #define ADDR_ALIGN(addr, align)   (((addr)+(align)-1)&(~((align)-1)))
 
 struct mm_tbuf_s;
@@ -82,8 +85,14 @@ typedef struct __attribute__((__packed__)) _chaindp_sndhdr{
 typedef struct _buf_info{
     void* buf;
     int size;
+    int type;
 }buf_info_t;
 
+typedef struct _idx_buf{
+    char* buf;
+    unsigned int size;
+    unsigned int pos;
+}idx_buf_t;
 
 int send_fpga_task(buf_info_t task);
 int get_fpga_task(buf_info_t* task);

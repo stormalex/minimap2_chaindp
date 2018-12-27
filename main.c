@@ -322,6 +322,10 @@ int main(int argc, char *argv[])
 	if (opt.best_n == 0 && (opt.flag&MM_F_CIGAR) && mm_verbose >= 2)
 		fprintf(stderr, "[WARNING]\033[1;31m `-N 0' reduces alignment accuracy. Please use --secondary=no to suppress secondary alignments.\033[0m\n");
 	
+#if FPGA_ON
+    fpga_init(BLOCK);
+#endif
+    
     pthread_t send_tid, recv_tid;
     init_fpga_task_array();
     init_fpga_result_array();
@@ -368,9 +372,15 @@ int main(int argc, char *argv[])
 
     stop_fpga_send_thread();
     stop_fpga_recv_thread();
+#if FPGA_ON
+    fpga_exit_block();
+#endif
     pthread_join(send_tid, NULL);
     pthread_join(recv_tid, NULL);
-    
+#if FPGA_ON
+    fpga_set_block();
+    fpga_finalize();
+#endif
 	if (fflush(stdout) == EOF) {
 		fprintf(stderr, "[ERROR] failed to write the results\n");
 		exit(EXIT_FAILURE);

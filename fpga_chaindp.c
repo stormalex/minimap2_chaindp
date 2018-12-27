@@ -168,10 +168,6 @@ void* recv_task_thread(void* arg)
             fprintf(stderr, "fpga_get_retbuf return NULL\n");
             exit(1);
         }
-        if(fpga_len > 4*1024*1024) {
-            fprintf(stderr, "fpga_len too long, %d\n", fpga_len);
-            exit(1);
-        }
         result.buf = malloc(fpga_len);
         result.size = fpga_len;
         memcpy(result.buf, fpga_buf, result.size);

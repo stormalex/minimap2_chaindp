@@ -7,6 +7,7 @@
 #endif
 #include <fcntl.h>
 #include <stdio.h>
+#include <errno.h>
 #define __STDC_LIMIT_MACROS
 #include "kthread.h"
 #include "bseq.h"
@@ -14,6 +15,8 @@
 #include "mmpriv.h"
 #include "kvec.h"
 #include "khash.h"
+
+#include "fpga_chaindp.h"
 
 #define idx_hash(a) ((a)>>1)
 #define idx_eq(a, b) ((a)>>1 == (b)>>1)
@@ -33,6 +36,17 @@ typedef struct mm_idx_bucket_s {
 
 extern struct mm_idx_bucket_s *g_B;
 extern int32_t g_b;
+
+#if FPGA_ON
+#include <sys/time.h>
+#include<time.h>
+static double realtime_msec(void)
+{
+    struct timespec tp;
+    clock_gettime(CLOCK_MONOTONIC, &tp);
+    return tp.tv_sec*1000 + tp.tv_nsec*1e-6;
+}
+#endif
 
 mm_idx_t *mm_idx_init(int w, int k, int b, int flag)
 {
@@ -365,6 +379,102 @@ static void *worker_pipeline(void *shared, int step, void *in)
     return 0;
 }
 
+idx_buf_t* idx_buf_create()
+{
+    idx_buf_t* idx_buf = (idx_buf_t*)malloc(sizeof(idx_buf_t));
+    if(idx_buf) {
+        idx_buf->buf = (char*)malloc(INDEX_BUF_SIZE);
+        idx_buf->size = INDEX_BUF_SIZE;
+        idx_buf->pos = 0;
+    }
+    return idx_buf;
+}
+
+int idx_buf_write64(idx_buf_t* idx_buf, uint8_t* data, int n)
+{
+    int i = 0;
+    if(idx_buf->pos + n >= idx_buf->size) {
+        return 0;
+    }
+    for(i = 0; i < n; i++) {
+        idx_buf->buf[idx_buf->pos++] = data[i];
+    }
+    return n;
+}
+
+void idx_buf_write_to_file(idx_buf_t* idx_buf, char* file_name)
+{
+    FILE* fp = fopen(file_name, "a+");
+    if(fp) {
+        int ret = fwrite(idx_buf->buf, idx_buf->pos, 1, fp);
+        if(ret != 1) {
+            fprintf(stderr, "write %s failed:%s\n", file_name, strerror(errno));
+            exit(1);
+        }
+        fclose(fp);
+        idx_buf->pos = 0;
+    }
+    return;
+}
+
+void idx_buf_destroy(idx_buf_t* idx_buf)
+{
+    free(idx_buf->buf);
+    free(idx_buf);
+}
+#if FPGA_ON
+void load_index(char* file_name, int type)
+{
+    int i =0;
+    int ret = 0;
+    struct stat stat;
+    char* buf = NULL;
+    long size = 0;
+    
+    fprintf(stderr, "load index:%s\n", file_name);
+    FILE* fp = fopen(file_name, "r");
+    if(fp == NULL) {
+        perror("fopen failed\n");
+        exit(1);
+    }
+    
+    ret = lstat(file_name, &stat);
+    if(ret) {
+        perror("ERROR:fstat failed!");
+        exit(1);
+    }
+    //size = ((stat.st_size + 64 - 1) & (~(64 - 1)));
+    size = stat.st_size;
+    int count = 0;
+    while(size > INDEX_LOAD_SIZE) {
+        buf = (char*)malloc(INDEX_LOAD_SIZE);
+        memset(buf, 0, INDEX_LOAD_SIZE);
+        ret = fread(buf, 1, INDEX_LOAD_SIZE, fp);
+        if(ret != INDEX_LOAD_SIZE) {
+            perror("1.fread failed");
+            exit(1);
+        }
+        fpga_load_index(buf, INDEX_LOAD_SIZE, type);
+        free(buf);
+        size -= INDEX_LOAD_SIZE;
+    }
+    if(size > 0) {
+        long tmp_size = ADDR_ALIGN(size, 64);
+        buf = (char*)malloc(tmp_size);
+        memset(buf, 0, tmp_size);
+        ret = fread(buf, 1, size, fp);
+        if(ret != size) {
+            perror("2.fread failed");
+            exit(1);
+        }
+        fpga_load_index(buf, tmp_size, type);
+        free(buf);
+    }
+    
+    fclose(fp);
+    return;
+}
+#endif
 mm_idx_t *mm_idx_gen(mm_bseq_file_t *fp, int w, int k, int b, int flag, int mini_batch_size, int n_threads, uint64_t batch_size)
 {
 	pipeline_t pl;
@@ -413,7 +523,95 @@ mm_idx_t *mm_idx_gen(mm_bseq_file_t *fp, int w, int k, int b, int flag, int mini
 		*/
 	}
 	#endif
+    
 	mm_idx_post(pl.mi, n_threads);
+#if FPGA_ON
+    double start, end;
+    
+    start = realtime_msec();
+    idx_buf_t* b_buf = idx_buf_create();
+    idx_buf_t* h_buf = idx_buf_create();
+    idx_buf_t* p_buf = idx_buf_create();
+    idx_buf_t* v_buf = idx_buf_create();
+    uint64_t allh = 0;
+    uint64_t allp = 0;
+    mm_idx_t *mi = pl.mi;
+    int i;
+    for(i = 0;i < (1<<mi->b);++i){
+        kh_idx_t* h = (idxhash_t*)mi->B[i].h;
+        uint64_t B[2] = {0};
+        if (mi->B[i].h) {
+            uint64_t values;
+            //Get B Array
+            uint64_t n_buckets;
+            n_buckets = kh_end((idxhash_t*)mi->B[i].h);
+            B[1] = allh << 28 | allp >> 8;
+            B[0] =(((allp&0xFF)<<56) | (n_buckets<<24));
+            if(idx_buf_write64(b_buf, (uint8_t *)B, 16) == 0) {
+                idx_buf_write_to_file(b_buf, "idxb.dat");
+                idx_buf_write64(b_buf, (uint8_t *)B, 16);
+            }
+
+            allh += n_buckets;
+            allp += mi->B[i].n;
+            //将 n_buckets h p 合并到128bit中，实际是拆分两个64bit 顺序分别为h-36bit|p-28bit|p-8bit|n_buckets-32bit|padding
+            for(int j = 0;j < n_buckets;++j){
+                uint64_t flags;
+                uint64_t keys;
+                flags = h->flags[j>>4];
+                keys = h->keys[j];
+                uint64_t a[2]={0};
+
+                //Get H Array
+                a[1] |= flags;
+                a[1] = (a[1] << 32) |((keys&0xffffffffffffUL)>>16);
+                a[0] |= keys&0xffff;
+                a[0] = a[0]<<48;
+                if(idx_buf_write64(h_buf, (uint8_t *)a, 16) == 0) {
+                    idx_buf_write_to_file(h_buf, "idxh.dat");
+                    idx_buf_write64(h_buf, (uint8_t *)a, 16);
+                }
+
+                //Get Values Array
+                values = h->vals[j];//value是后期可能要优化为48bit    21-bit|22-bit|padding
+                if(idx_buf_write64(v_buf, (uint8_t *)&values, 8) == 0) {
+                    idx_buf_write_to_file(v_buf, "idxv.dat");
+                    idx_buf_write64(v_buf, (uint8_t *)&values, 8);
+                }
+            }
+
+            //Get p Array
+            int n = mi->B[i].n;
+            for(int j = 0;j < n;++j){
+                values = mi->B[i].p[j];
+                if(idx_buf_write64(p_buf, (uint8_t *)&values, 8) == 0) {
+                    idx_buf_write_to_file(p_buf, "idxp.dat");
+                    idx_buf_write64(p_buf, (uint8_t *)&values, 8);
+                }
+            }
+        } else {
+            if(idx_buf_write64(b_buf, (uint8_t *)B, 16) == 0) {
+                idx_buf_write_to_file(b_buf, "idxb.dat");
+                idx_buf_write64(b_buf, (uint8_t *)B, 16);
+            }
+        }
+    }
+    idx_buf_write_to_file(b_buf, "idxb.dat");
+    idx_buf_write_to_file(h_buf, "idxh.dat");
+    idx_buf_write_to_file(p_buf, "idxp.dat");
+    idx_buf_write_to_file(v_buf, "idxv.dat");
+    idx_buf_destroy(b_buf);
+    idx_buf_destroy(h_buf);
+    idx_buf_destroy(p_buf);
+    idx_buf_destroy(v_buf);
+    end = realtime_msec();
+    fprintf(stderr, "create idx time:%.3f\n", end - start);
+    
+    load_index("idxb.dat", TYPE_INDEX_B);
+    load_index("idxh.dat", TYPE_INDEX_H);
+    load_index("idxv.dat", TYPE_INDEX_V);
+    load_index("idxp.dat", TYPE_INDEX_P);
+#endif
 	if (mm_verbose >= 3)
 		fprintf(stderr, "[M::%s::%.3f*%.2f] sorted minimizers\n", __func__, realtime() - mm_realtime0, cputime() / (realtime() - mm_realtime0));
 
