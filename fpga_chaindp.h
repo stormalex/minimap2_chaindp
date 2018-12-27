@@ -6,10 +6,14 @@
 
 #define FPGA_ON 0
 
+#if FPGA_ON
+#include "fpga.h"
+#endif
+
 #define SEND_ARRAY_MAX  1024
 
 #define INDEX_BUF_SIZE  256*1024*1024    //256M
-#define INDEX_LOAD_SIZE  4*1024*1024    //256M
+#define INDEX_LOAD_SIZE  4*1024*1024    //4M
 
 #define ADDR_ALIGN(addr, align)   (((addr)+(align)-1)&(~((align)-1)))
 

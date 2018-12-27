@@ -7,6 +7,8 @@
 #endif
 #include <fcntl.h>
 #include <stdio.h>
+#include <sys/types.h>
+#include <sys/stat.h>
 #include <errno.h>
 #define __STDC_LIMIT_MACROS
 #include "kthread.h"
@@ -425,7 +427,6 @@ void idx_buf_destroy(idx_buf_t* idx_buf)
 #if FPGA_ON
 void load_index(char* file_name, int type)
 {
-    int i =0;
     int ret = 0;
     struct stat stat;
     char* buf = NULL;
@@ -445,7 +446,6 @@ void load_index(char* file_name, int type)
     }
     //size = ((stat.st_size + 64 - 1) & (~(64 - 1)));
     size = stat.st_size;
-    int count = 0;
     while(size > INDEX_LOAD_SIZE) {
         buf = (char*)malloc(INDEX_LOAD_SIZE);
         memset(buf, 0, INDEX_LOAD_SIZE);

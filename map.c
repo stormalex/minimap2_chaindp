@@ -14,11 +14,11 @@
 
 void* result_thread(void* args);
 
-#if !FPGA_ON
+
 struct mm_idx_bucket_s;
 struct mm_idx_bucket_s *g_B = NULL;
 int32_t g_b = 0;
-#endif
+
 static int g_parm_flag = 0;
 static int g_parm_midocc = 0;
 static int g_parm_bw = 0;
@@ -655,10 +655,10 @@ static void *worker_pipeline(void *shared, int step, void *in)
         for(i = 0; i < 10; i++) {
             pthread_create(&result_tid[i], NULL, result_thread, &params);
         }
-#if !FPGA_ON
+
         g_B = ((step_t*)in)->p->mi->B;      //软件模拟fpga的时候，将B设置到全局变量上
         g_b = ((step_t*)in)->p->mi->b;
-#endif
+
         g_parm_flag = p->opt->flag;
         g_parm_midocc = p->opt->mid_occ;
         g_parm_bw = p->opt->bw;
@@ -784,8 +784,9 @@ int read_result_handle(context_t* context, int n_minipos, uint64_t* mini_pos, st
     
     a = mm_chain_dp_bottom(opt->min_cnt, opt->min_chain_score, n_segs, &n_regs0, &u, NULL, fpga_a, new_i);
 
-    /*if (opt->max_occ > opt->mid_occ && rep_len > 0) {
-        int rechain = 0;
+    if (opt->max_occ > opt->mid_occ && rep_len > 0) {
+        assert(0);
+        /*int rechain = 0;
         if (n_regs0 > 0) { // test if the best chain has all the segments
             int n_chained_segs = 1, max = 0, max_i = -1, max_off = -1, off = 0;
             for (i = 0; i < n_regs0; ++i) { // find the best chain
@@ -803,8 +804,8 @@ int read_result_handle(context_t* context, int n_minipos, uint64_t* mini_pos, st
             //else 
             a = collect_seed_hits(opt->flag, opt->max_occ, &mv, bid, qlen_sum, &n_a, &rep_len, &n_mini_pos, &mini_pos);
             a = mm_chain_dp(max_chain_gap_ref, max_chain_gap_qry, opt->bw, opt->max_chain_skip, opt->min_cnt, opt->min_chain_score, is_splice, n_segs, n_a, a, &n_regs0, &u, b->km);
-        }
-    }*/
+        }*/
+    }
 
     regs0 = mm_gen_regs(NULL, hash, qlen_sum, n_regs0, u, a);
     //fprintf(stderr,"finish mm_gen_regs one read!\n");
@@ -841,16 +842,6 @@ int read_result_handle(context_t* context, int n_minipos, uint64_t* mini_pos, st
         free(a);
     if(u != NULL)
         free(u);
-    /*if (b->km) {
-        km_stat(b->km, &kmst);
-        if (mm_dbg_flag & MM_DBG_PRINT_QNAME)
-            fprintf(stderr, "QM\t%s\t%d\tcap=%ld,nCore=%ld,largest=%ld\n", qname, qlen_sum, kmst.capacity, kmst.n_cores, kmst.largest);
-        assert(kmst.n_blocks == kmst.n_cores); // otherwise, there is a memory leak
-        if (kmst.largest > 1U<<28) {
-            km_destroy(b->km);
-            b->km = km_init();
-        }
-    }*/
     return 0;
 }
 
