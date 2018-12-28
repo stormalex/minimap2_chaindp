@@ -107,7 +107,8 @@ int main(int argc, char *argv[])
 	FILE *fp_help = stderr;
 	mm_idx_reader_t *idx_rdr;
 	mm_idx_t *mi;
-
+    
+    fprintf(stderr, "sizeof(struct new_seed)=%ld\n", sizeof(struct new_seed));
     fprintf(stderr, "sizeof(collect_task_t)=%ld\n", sizeof(collect_task_t));
     assert(sizeof(collect_task_t) == 64);
     fprintf(stderr, "sizeof(chaindp_sndhdr_t)=%ld\n", sizeof(chaindp_sndhdr_t));
@@ -332,6 +333,7 @@ int main(int argc, char *argv[])
     pthread_create(&send_tid, NULL, send_task_thread, NULL);
     pthread_create(&recv_tid, NULL, recv_task_thread, NULL);
     
+    
     while ((mi = mm_idx_reader_read(idx_rdr, n_threads)) != 0) {
 		if ((opt.flag & MM_F_CIGAR) && (mi->flag & MM_I_NO_SEQ)) {
 			fprintf(stderr, "[ERROR] the prebuilt index doesn't contain sequences.\n");
@@ -355,6 +357,11 @@ int main(int argc, char *argv[])
 		if (argc != optind + 1) mm_mapopt_update(&opt, mi);
 
 		if (mm_verbose >= 3) mm_idx_stat(mi);
+#if FPGA_ON
+        //bw,  is_cdna,  max_skip,  min_sc,  flag,  max_occ
+        fprintf(stderr, "fpga params:bw:0x%x, is_cdna:0x%x, max_skip:0x%x, min_sc:0x%x, flag:0x%x, max_occ:0x%x\n", opt.bw, !!(opt.flag & MM_F_SPLICE), opt.max_chain_skip, opt.min_chain_score, opt.flag, opt.mid_occ);
+        fpga_set_params(opt.bw, !!(opt.flag & MM_F_SPLICE), opt.max_chain_skip, opt.min_chain_score, opt.flag, opt.mid_occ);  //data1
+#endif
 		if (!(opt.flag & MM_F_FRAG_MODE)) {
 			for (i = optind + 1; i < argc; ++i)
 				mm_map_file(mi, argv[i], &opt, n_threads);

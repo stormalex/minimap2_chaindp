@@ -338,7 +338,10 @@ void mm_map_frag(const mm_idx_t *mi, int n_segs, const int *qlens, const char **
     unsigned int bid = dichotomy_sort(qname, mi->rname_rid, mi->n_seq);
     
 	collect_minimizers(b->km, opt, mi, n_segs, qlens, seqs, &mv);
-
+    if(mv.n == 0) {
+        __sync_sub_and_fetch(&params->read_num, 1);
+        return;
+    }
     // set max chaining gap on the query and the reference sequence
 	if (is_sr)
 		max_chain_gap_qry = qlen_sum > opt->max_gap? qlen_sum : opt->max_gap;
@@ -386,7 +389,11 @@ void mm_map_frag(const mm_idx_t *mi, int n_segs, const int *qlens, const char **
     task->b = mi->b;
     task->mv_a = (mm128_t*)malloc(mv.n * sizeof(mm128_t));
     memcpy(task->mv_a, mv.a, mv.n * sizeof(mm128_t));
-
+    
+    if(mv.n == 0) {
+        fprintf(stderr, "WARNING:seed num = 0, read_id=%ld\n", read_id);
+    }
+    
     kfree(b->km, mv.a);
     
     assert(params->tasks[read_id] == NULL);
@@ -400,7 +407,7 @@ void mm_map_frag(const mm_idx_t *mi, int n_segs, const int *qlens, const char **
     params->send_task[tid].data_size += data_size;
     
     //打包
-    if(params->send_task[tid].num >= 8) {
+    if(params->send_task[tid].num >= 1) {
         int size = 0;
         void* buf = package_task(params->send_task[tid].tasks, params->send_task[tid].num, params->send_task[tid].data_size, &size);
         if(buf) {

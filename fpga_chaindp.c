@@ -159,7 +159,7 @@ void* recv_task_thread(void* arg)
         buf_info_t result;
         int fpga_len;
         void* fpga_buf;
-        fpga_buf = fpga_get_retbuf(&fpga_len, RET_TYPE_CD);
+        fpga_buf = fpga_get_retbuf(&fpga_len, RET_TYPE_CS);
         if(fpga_len == 0) {
             fprintf(stderr, "exit recv fpga thread\n");
             return NULL;

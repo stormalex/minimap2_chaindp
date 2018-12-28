@@ -526,6 +526,9 @@ mm_idx_t *mm_idx_gen(mm_bseq_file_t *fp, int w, int k, int b, int flag, int mini
     
 	mm_idx_post(pl.mi, n_threads);
 #if FPGA_ON
+
+    system("rm *.dat -f");
+
     double start, end;
     
     start = realtime_msec();
