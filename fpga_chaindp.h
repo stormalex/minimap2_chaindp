@@ -4,8 +4,8 @@
 #include <stdint.h>
 #include "minimap.h"
 
-#define FPGA_ON 0
-
+#define FPGA_ON 1
+#define DUMP_FILE   0
 #if FPGA_ON
 #include "fpga.h"
 #endif

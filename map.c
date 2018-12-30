@@ -407,7 +407,7 @@ void mm_map_frag(const mm_idx_t *mi, int n_segs, const int *qlens, const char **
     params->send_task[tid].data_size += data_size;
     
     //打包
-    if(params->send_task[tid].num >= 1) {
+    if(params->send_task[tid].num >= 8) {
         int size = 0;
         void* buf = package_task(params->send_task[tid].tasks, params->send_task[tid].num, params->send_task[tid].data_size, &size);
         if(buf) {
@@ -602,6 +602,7 @@ static void worker_for(void *_data, long i, int tid, void* _params) // kt_for() 
 }
 
 void last_send(void *data, int tid);
+void* result_thread(void* args);
 
 static void *worker_pipeline(void *shared, int step, void *in)
 {
@@ -674,7 +675,7 @@ static void *worker_pipeline(void *shared, int step, void *in)
         g_parm_score = p->opt->min_chain_score;
 
 		//kt_for_map(p->n_threads, worker_for, in, ((step_t*)in)->n_frag, (void *)&params, last_send, NULL);
-        kt_for_map(p->n_threads - 10, worker_for, in, ((step_t*)in)->n_frag, (void *)&params, last_send, NULL);
+        kt_for_map(p->n_threads - 10, worker_for, in, ((step_t*)in)->n_frag, (void *)&params, last_send, result_thread);
         
         for(i = 0; i < 10; i++)
             pthread_join(result_tid[i], NULL);
@@ -886,7 +887,7 @@ void* result_thread(void* args)
             int rep_len = out_sub_head->rep_len;
             
             if(out_sub_head->err_flag == 1) {   //硬件处理不了的数据，软件处理
-                fprintf(stderr, "soft process\n");
+                fprintf(stderr, "soft process, read_id=%u\n", read_id);
                 collect_task_t* task = params->tasks[read_id];
                 int64_t n_a = 0;
                 //on fpga

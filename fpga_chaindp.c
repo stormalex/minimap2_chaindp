@@ -69,11 +69,16 @@ int get_fpga_task(buf_info_t* task)
 
 void* send_task_thread(void* arg)
 {
+    int magic_idx = 0;
     buf_info_t task;
+    
     while(fpga_send_task_stop) {
         if(get_fpga_task(&task)) {
             continue;
         }
+        chaindp_sndhdr_t* head = (chaindp_sndhdr_t*)task.buf;      //包头指针
+        head->magic = magic_idx;
+        magic_idx++;
 #if FPGA_ON
         void* fpga_buf;
         fpga_buf = fpga_get_writebuf(task.size, BUF_TYPE_SW);
@@ -84,9 +89,39 @@ void* send_task_thread(void* arg)
         memcpy(fpga_buf, task.buf, task.size);
         fpga_writebuf_submit(fpga_buf, task.size, TYPE_CD);
 #else
+        
         int out_size;
         buf_info_t result;
+#if DUMP_FILE
+        collect_task_t* sub_head = (collect_task_t*)(task.buf + sizeof(chaindp_sndhdr_t));    //子头指针
+        if(sub_head->read_id == 33) {
+            FILE* fp = fopen("33_collect_in.dat", "w+");
+            if(fp) {
+                int ret = fwrite(task.buf, task.size, 1, fp);
+                if(ret != 1) {
+                    fprintf(stderr, "fwrite failed\n");
+                    exit(1);
+                }
+                fclose(fp);
+            }
+        }
+#endif
         void* out_buf = fpga_work(task.buf, task.size, &out_size);
+#if DUMP_FILE
+        sub_head = (collect_task_t*)(out_buf + sizeof(chaindp_sndhdr_t));    //子头指针
+        if(sub_head->read_id == 33) {
+            FILE* fp = fopen("33_collect_out.dat", "w+");
+            if(fp) {
+                int ret = fwrite(task.buf, task.size, 1, fp);
+                if(ret != 1) {
+                    fprintf(stderr, "fwrite failed\n");
+                    exit(1);
+                }
+                fclose(fp);
+            }
+            exit(1);
+        }
+#endif
         result.buf = out_buf;
         result.size = out_size;
         while(send_fpga_result(result));
