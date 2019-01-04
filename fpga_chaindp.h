@@ -12,8 +12,8 @@
 
 #define SEND_ARRAY_MAX  1024
 
-#define INDEX_BUF_SIZE  256*1024*1024    //256M
-#define INDEX_LOAD_SIZE  4*1024*1024    //4M
+#define INDEX_BUF_SIZE  1024*1024*1024    //256M
+#define INDEX_LOAD_SIZE  1024*1024*1024    //4M
 
 #define ADDR_ALIGN(addr, align)   (((addr)+(align)-1)&(~((align)-1)))
 
@@ -93,9 +93,10 @@ typedef struct _buf_info{
 }buf_info_t;
 
 typedef struct _idx_buf{
+    char* buf_name;
     char* buf;
-    unsigned int size;
-    unsigned int pos;
+    unsigned long long size;
+    unsigned long long pos;
 }idx_buf_t;
 
 int send_fpga_task(buf_info_t task);

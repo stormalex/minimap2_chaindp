@@ -103,6 +103,8 @@ void mm_idx_stat(const mm_idx_t *mi)
 {
 	int i, n = 0, n1 = 0;
 	uint64_t sum = 0, len = 0;
+    double t1, t2;
+    t1 = realtime_msec();
 	fprintf(stderr, "[M::%s] kmer size: %d; skip: %d; is_hpc: %d; #seq: %d\n", __func__, mi->k, mi->w, mi->flag&MM_I_HPC, mi->n_seq);
 	for (i = 0; i < mi->n_seq; ++i)
 		len += mi->seq[i].len;
@@ -120,6 +122,8 @@ void mm_idx_stat(const mm_idx_t *mi)
 	}
 	fprintf(stderr, "[M::%s::%.3f*%.2f] distinct minimizers: %d (%.2f%% are singletons); average occurrences: %.3lf; average spacing: %.3lf\n",
 			__func__, realtime() - mm_realtime0, cputime() / (realtime() - mm_realtime0), n, 100.0*n1/n, (double)sum / n, (double)len / sum);
+    t2 = realtime_msec();
+    fprintf(stderr, "mm_idx_stat time:%.3f\n", t2 - t1);
 }
 
 int mm_idx_index_name(mm_idx_t *mi)
@@ -396,7 +400,12 @@ int idx_buf_write64(idx_buf_t* idx_buf, uint8_t* data, int n)
 {
     int i = 0;
     if(idx_buf->pos + n >= idx_buf->size) {
-        return 0;
+        idx_buf->size += INDEX_BUF_SIZE;
+        idx_buf->buf = (char*)realloc(idx_buf->buf, idx_buf->size);
+        if(idx_buf->buf == NULL) {
+            fprintf(stderr, "realloc failed\n");
+            exit(1);
+        }
     }
     for(i = 0; i < n; i++) {
         idx_buf->buf[idx_buf->pos++] = data[i];
@@ -474,11 +483,31 @@ void load_index(char* file_name, int type)
     fclose(fp);
     return;
 }
+void load_index_buf(idx_buf_t* idx_buf, int type)
+{
+    unsigned long long size = idx_buf->pos;
+    unsigned long long i = 0;
+    
+    while(size > INDEX_LOAD_SIZE) {
+        fpga_load_index(&idx_buf->buf[i], INDEX_LOAD_SIZE, type);
+        size -= INDEX_LOAD_SIZE;
+        i += INDEX_LOAD_SIZE;
+    }
+    if(size > 0) {
+        unsigned long long tmp_size = ADDR_ALIGN(size, 64);
+        fpga_load_index(&idx_buf->buf[i], tmp_size, type);
+        i += size;
+    }
+    fprintf(stderr, "load size:%lld buf type:%d\n", i, type);
+    return;
+}
 #endif
 mm_idx_t *mm_idx_gen(mm_bseq_file_t *fp, int w, int k, int b, int flag, int mini_batch_size, int n_threads, uint64_t batch_size)
 {
 	pipeline_t pl;
+    double t1, t2;
 	if (fp == 0 || mm_bseq_eof(fp)) return 0;
+    t1 = realtime_msec();
 	memset(&pl, 0, sizeof(pipeline_t));
 	pl.mini_batch_size = mini_batch_size < batch_size? mini_batch_size : batch_size;
 	pl.batch_size = batch_size;
@@ -486,9 +515,12 @@ mm_idx_t *mm_idx_gen(mm_bseq_file_t *fp, int w, int k, int b, int flag, int mini
 	pl.mi = mm_idx_init(w, k, b, flag);
 
 	kt_pipeline(n_threads < 3? n_threads : 3, worker_pipeline, &pl, 3);
+    t2 = realtime_msec();
+    fprintf(stderr, "mm_idx_gen 1:%.3f msec\n", t2 - t1);
 	if (mm_verbose >= 3)
 		fprintf(stderr, "[M::%s::%.3f*%.2f] collected minimizers\n", __func__, realtime() - mm_realtime0, cputime() / (realtime() - mm_realtime0));
 	#if 1
+    t1 = realtime_msec();
 	{
 		mm_idx_t *mi = pl.mi;
 		mi->rname_rid = (rname_rid_t *)calloc(mi->n_seq, sizeof(rname_rid_t));
@@ -522,12 +554,19 @@ mm_idx_t *mm_idx_gen(mm_bseq_file_t *fp, int w, int k, int b, int flag, int mini
 			}
 		*/
 	}
+    t2 = realtime_msec();
+    fprintf(stderr, "mm_idx_gen 2:%.3f msec\n", t2 - t1);
 	#endif
     
+    t1 = realtime_msec();
+    
 	mm_idx_post(pl.mi, n_threads);
+    
+    t2 = realtime_msec();
+    fprintf(stderr, "mm_idx_gen 3:%.3f msec\n", t2 - t1);
 #if FPGA_ON
 
-    system("rm *.dat -f");
+    //system("rm *.dat -f");
 
     double start, end;
     
@@ -550,10 +589,10 @@ mm_idx_t *mm_idx_gen(mm_bseq_file_t *fp, int w, int k, int b, int flag, int mini
             n_buckets = kh_end((idxhash_t*)mi->B[i].h);
             B[1] = allh << 28 | allp >> 8;
             B[0] =(((allp&0xFF)<<56) | (n_buckets<<24));
-            if(idx_buf_write64(b_buf, (uint8_t *)B, 16) == 0) {
-                idx_buf_write_to_file(b_buf, "idxb.dat");
+            //if(idx_buf_write64(b_buf, (uint8_t *)B, 16) == 0) {
+                //idx_buf_write_to_file(b_buf, "idxb.dat");
                 idx_buf_write64(b_buf, (uint8_t *)B, 16);
-            }
+            //}
 
             allh += n_buckets;
             allp += mi->B[i].n;
@@ -570,50 +609,57 @@ mm_idx_t *mm_idx_gen(mm_bseq_file_t *fp, int w, int k, int b, int flag, int mini
                 a[1] = (a[1] << 32) |((keys&0xffffffffffffUL)>>16);
                 a[0] |= keys&0xffff;
                 a[0] = a[0]<<48;
-                if(idx_buf_write64(h_buf, (uint8_t *)a, 16) == 0) {
-                    idx_buf_write_to_file(h_buf, "idxh.dat");
+                //if(idx_buf_write64(h_buf, (uint8_t *)a, 16) == 0) {
+                    //idx_buf_write_to_file(h_buf, "idxh.dat");
                     idx_buf_write64(h_buf, (uint8_t *)a, 16);
-                }
+                //}
 
                 //Get Values Array
                 values = h->vals[j];//value是后期可能要优化为48bit    21-bit|22-bit|padding
-                if(idx_buf_write64(v_buf, (uint8_t *)&values, 8) == 0) {
-                    idx_buf_write_to_file(v_buf, "idxv.dat");
+                //if(idx_buf_write64(v_buf, (uint8_t *)&values, 8) == 0) {
+                    //idx_buf_write_to_file(v_buf, "idxv.dat");
                     idx_buf_write64(v_buf, (uint8_t *)&values, 8);
-                }
+                //}
             }
 
             //Get p Array
             int n = mi->B[i].n;
             for(int j = 0;j < n;++j){
                 values = mi->B[i].p[j];
-                if(idx_buf_write64(p_buf, (uint8_t *)&values, 8) == 0) {
-                    idx_buf_write_to_file(p_buf, "idxp.dat");
+                //if(idx_buf_write64(p_buf, (uint8_t *)&values, 8) == 0) {
+                    //idx_buf_write_to_file(p_buf, "idxp.dat");
                     idx_buf_write64(p_buf, (uint8_t *)&values, 8);
-                }
+                //}
             }
         } else {
-            if(idx_buf_write64(b_buf, (uint8_t *)B, 16) == 0) {
-                idx_buf_write_to_file(b_buf, "idxb.dat");
+            //if(idx_buf_write64(b_buf, (uint8_t *)B, 16) == 0) {
+                //idx_buf_write_to_file(b_buf, "idxb.dat");
                 idx_buf_write64(b_buf, (uint8_t *)B, 16);
-            }
+            //}
         }
     }
-    idx_buf_write_to_file(b_buf, "idxb.dat");
-    idx_buf_write_to_file(h_buf, "idxh.dat");
-    idx_buf_write_to_file(p_buf, "idxp.dat");
-    idx_buf_write_to_file(v_buf, "idxv.dat");
+    //idx_buf_write_to_file(b_buf, "idxb.dat");
+    //idx_buf_write_to_file(h_buf, "idxh.dat");
+    //idx_buf_write_to_file(p_buf, "idxp.dat");
+    //idx_buf_write_to_file(v_buf, "idxv.dat");
+    
+    
+    //load_index("idxb.dat", TYPE_INDEX_B);
+    //load_index("idxh.dat", TYPE_INDEX_H);
+    //load_index("idxv.dat", TYPE_INDEX_V);
+    //load_index("idxp.dat", TYPE_INDEX_P);
+    
+    load_index_buf(b_buf, TYPE_INDEX_B);
+    load_index_buf(h_buf, TYPE_INDEX_H);
+    load_index_buf(v_buf, TYPE_INDEX_V);
+    load_index_buf(p_buf, TYPE_INDEX_P);
+    
     idx_buf_destroy(b_buf);
     idx_buf_destroy(h_buf);
     idx_buf_destroy(p_buf);
     idx_buf_destroy(v_buf);
     end = realtime_msec();
     fprintf(stderr, "create idx time:%.3f\n", end - start);
-    
-    load_index("idxb.dat", TYPE_INDEX_B);
-    load_index("idxh.dat", TYPE_INDEX_H);
-    load_index("idxv.dat", TYPE_INDEX_V);
-    load_index("idxp.dat", TYPE_INDEX_P);
 #endif
 	if (mm_verbose >= 3)
 		fprintf(stderr, "[M::%s::%.3f*%.2f] sorted minimizers\n", __func__, realtime() - mm_realtime0, cputime() / (realtime() - mm_realtime0));
@@ -817,7 +863,9 @@ void mm_idx_reader_close(mm_idx_reader_t *r)
 
 mm_idx_t *mm_idx_reader_read(mm_idx_reader_t *r, int n_threads)
 {
+    double t1, t2;
 	mm_idx_t *mi;
+    t1 = realtime_msec();
 	if (r->is_idx) {
 		mi = mm_idx_load(r->fp.idx);
 		if (mi && mm_verbose >= 2 && (mi->k != r->opt.k || mi->w != r->opt.w || (mi->flag&MM_I_HPC) != (r->opt.flag&MM_I_HPC)))
@@ -828,6 +876,8 @@ mm_idx_t *mm_idx_reader_read(mm_idx_reader_t *r, int n_threads)
 		if (r->fp_out) mm_idx_dump(r->fp_out, mi);
 		++r->n_parts;
 	}
+    t2 = realtime_msec();
+    fprintf(stderr, "mm_idx_reader_read time:%.3f\n", t2 - t1);
 	return mi;
 }
 

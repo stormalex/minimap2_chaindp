@@ -30,6 +30,15 @@ void liftrlimit()
 void liftrlimit() {}
 #endif
 
+#include <sys/time.h>
+#include<time.h>
+static double realtime_msec(void)
+{
+    struct timespec tp;
+    clock_gettime(CLOCK_MONOTONIC, &tp);
+    return tp.tv_sec*1000 + tp.tv_nsec*1e-6;
+}
+
 static struct option long_options[] = {
 	{ "bucket-bits",    required_argument, 0, 0 },
 	{ "mb-size",        required_argument, 0, 'K' },
@@ -96,6 +105,15 @@ static inline void yes_or_no(mm_mapopt_t *opt, int flag, int long_idx, const cha
 	}
 }
 
+int max_task = 0;
+
+double result_time[100];
+double send_task1[100];
+double send_task2[100];
+double process_result[100];
+
+double soft_chaindp_time[100];
+int soft_chaindp_num = 0;
 
 int main(int argc, char *argv[])
 {
@@ -107,6 +125,14 @@ int main(int argc, char *argv[])
 	FILE *fp_help = stderr;
 	mm_idx_reader_t *idx_rdr;
 	mm_idx_t *mi;
+    double t1, t2;
+    t1 = realtime_msec();
+    
+    memset(result_time, 0, sizeof(result_time));
+    memset(send_task1, 0, sizeof(send_task1));
+    memset(send_task2, 0, sizeof(send_task2));
+    memset(process_result, 0, sizeof(process_result));
+    memset(soft_chaindp_time, 0, sizeof(soft_chaindp_time));
     
     fprintf(stderr, "sizeof(struct new_seed)=%ld\n", sizeof(struct new_seed));
     fprintf(stderr, "sizeof(collect_task_t)=%ld\n", sizeof(collect_task_t));
@@ -333,14 +359,21 @@ int main(int argc, char *argv[])
     pthread_create(&send_tid, NULL, send_task_thread, NULL);
     pthread_create(&recv_tid, NULL, recv_task_thread, NULL);
     
-    
+    t2 = realtime_msec();
+    fprintf(stderr, "init time=%.3f\n", t2 - t1);
     while ((mi = mm_idx_reader_read(idx_rdr, n_threads)) != 0) {
+        double t1, t2;
+        t1 = realtime_msec();
 		if ((opt.flag & MM_F_CIGAR) && (mi->flag & MM_I_NO_SEQ)) {
 			fprintf(stderr, "[ERROR] the prebuilt index doesn't contain sequences.\n");
 			mm_idx_destroy(mi);
 			mm_idx_reader_close(idx_rdr);
 			return 1;
 		}
+        t2 = realtime_msec();
+        fprintf(stderr, "handle 1 time:%.3f\n", t2 - t1);
+        
+        t1 = realtime_msec();
 		if ((opt.flag & MM_F_OUT_SAM) && idx_rdr->n_parts == 1) {
 			if (mm_idx_reader_eof(idx_rdr)) {
 				mm_write_sam_hdr(mi, rg, MM_VERSION, argc, argv);
@@ -350,11 +383,19 @@ int main(int argc, char *argv[])
 					fprintf(stderr, "[WARNING]\033[1;31m For a multi-part index, no @SQ lines will be outputted.\033[0m\n");
 			}
 		}
+        t2 = realtime_msec();
+        fprintf(stderr, "handle 2 time:%.3f\n", t2 - t1);
 		//fprintf(stderr,"finished work_post\n");
+        t1 = realtime_msec();
 		if (mm_verbose >= 3)
 			fprintf(stderr, "[M::%s::%.3f*%.2f] loaded/built the index for %d target sequence(s)\n",
 					__func__, realtime() - mm_realtime0, cputime() / (realtime() - mm_realtime0), mi->n_seq);
 		if (argc != optind + 1) mm_mapopt_update(&opt, mi);
+        
+        t2 = realtime_msec();
+        fprintf(stderr, "handle 3 time:%.3f\n", t2 - t1);
+        
+        t1 = realtime_msec();
 
 		if (mm_verbose >= 3) mm_idx_stat(mi);
 #if FPGA_ON
@@ -362,6 +403,10 @@ int main(int argc, char *argv[])
         fprintf(stderr, "fpga params:bw:0x%x, is_cdna:0x%x, max_skip:0x%x, min_sc:0x%x, flag:0x%x, max_occ:0x%x\n", opt.bw, !!(opt.flag & MM_F_SPLICE), opt.max_chain_skip, opt.min_chain_score, opt.flag, opt.mid_occ);
         fpga_set_params(opt.bw, !!(opt.flag & MM_F_SPLICE), opt.max_chain_skip, opt.min_chain_score, opt.flag, opt.mid_occ);  //data1
 #endif
+        t2 = realtime_msec();
+        fprintf(stderr, "handle 4 time:%.3f\n", t2 - t1);
+        
+        t1 = realtime_msec();
 		if (!(opt.flag & MM_F_FRAG_MODE)) {
 			for (i = optind + 1; i < argc; ++i)
 				mm_map_file(mi, argv[i], &opt, n_threads);
@@ -373,8 +418,10 @@ int main(int argc, char *argv[])
         free(mi->rname_rid);
 
 		mm_idx_destroy(mi);
-        
+        t2 = realtime_msec();
+        fprintf(stderr, "handle 5 time:%.3f\n", t2 - t1);
 	}
+    t1 = realtime_msec();
 	mm_idx_reader_close(idx_rdr);
 
     stop_fpga_send_thread();
@@ -400,5 +447,43 @@ int main(int argc, char *argv[])
 			fprintf(stderr, " %s", argv[i]);
 		fprintf(stderr, "\n[M::%s] Real time: %.3f sec; CPU: %.3f sec\n", __func__, realtime() - mm_realtime0, cputime());
 	}
+    
+    double send_task1_total = 0;
+    for(i = 0; i < sizeof(send_task1)/sizeof(send_task1[0]); i++) {
+        if(send_task1[i] == 0)
+            break;
+        send_task1_total += send_task1[i];
+    }
+    fprintf(stderr, "send task 1 time:      %.3f msec i=%d\n", send_task1_total/i, i);
+    
+    double send_task2_total = 0;
+    for(i = 0; i < sizeof(send_task2)/sizeof(send_task2[0]); i++) {
+        if(send_task2[i] == 0)
+            break;
+        send_task2_total += send_task2[i];
+    }
+    fprintf(stderr, "send task 2 time:      %.3f msec i=%d\n", send_task2_total/i, i);
+    
+    double process_result_total = 0;
+    for(i = 0; i < sizeof(process_result)/sizeof(process_result[0]); i++) {
+        if(process_result[i] == 0)
+            break;
+        process_result_total += process_result[i];
+    }
+    fprintf(stderr, "process result time:      %.3f msec i=%d\n", process_result_total/i, i);
+    
+    double soft_chaindp_total = 0;
+    int soft_chaindp_tid = 0;
+    for(i = 0; i < sizeof(soft_chaindp_time)/sizeof(soft_chaindp_time[0]); i++) {
+        if(soft_chaindp_time[i] != 0) {
+            soft_chaindp_total += soft_chaindp_time[i];
+            soft_chaindp_tid++;
+        }
+    }
+    fprintf(stderr, "soft chaindp total time:      %.3f msec, counter=%d, avg time:%.3f\n", soft_chaindp_total, soft_chaindp_num, soft_chaindp_total/soft_chaindp_num);
+    
+    fprintf(stderr, "\nmax_task=%d\n", max_task);
+    t2 = realtime_msec();
+    fprintf(stderr, "finilize time=%.3f\n", t2 - t1);
 	return 0;
 }

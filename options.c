@@ -1,6 +1,15 @@
 #include <stdio.h>
 #include "mmpriv.h"
 
+#include <sys/time.h>
+#include<time.h>
+static double realtime_msec(void)
+{
+    struct timespec tp;
+    clock_gettime(CLOCK_MONOTONIC, &tp);
+    return tp.tv_sec*1000 + tp.tv_nsec*1e-6;
+}
+
 void mm_idxopt_init(mm_idxopt_t *opt)
 {
 	memset(opt, 0, sizeof(mm_idxopt_t));
@@ -47,6 +56,8 @@ void mm_mapopt_init(mm_mapopt_t *opt)
 
 void mm_mapopt_update(mm_mapopt_t *opt, const mm_idx_t *mi)
 {
+    double t1, t2;
+    t1 = realtime_msec();
 	if ((opt->flag & MM_F_SPLICE_FOR) && (opt->flag & MM_F_SPLICE_REV))
 		opt->flag |= MM_F_SPLICE;
 	if (opt->mid_occ <= 0)
@@ -55,6 +66,8 @@ void mm_mapopt_update(mm_mapopt_t *opt, const mm_idx_t *mi)
 		opt->mid_occ = opt->min_mid_occ;
 	if (mm_verbose >= 3)
 		fprintf(stderr, "[M::%s::%.3f*%.2f] mid_occ = %d\n", __func__, realtime() - mm_realtime0, cputime() / (realtime() - mm_realtime0), opt->mid_occ);
+    t2 = realtime_msec();
+    fprintf(stderr, "mm_mapopt_update time:%.3f\n", t2 - t1);
 }
 
 void mm_mapopt_max_intron_len(mm_mapopt_t *opt, int max_intron_len)

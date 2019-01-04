@@ -8,6 +8,18 @@
 #define __sync_fetch_and_add(ptr, addend)     _InterlockedExchangeAdd((void*)ptr, addend)
 #endif
 
+extern double send_task1[100];
+extern double send_task2[100];
+extern double process_result[100];
+#include <sys/time.h>
+#include<time.h>
+static double realtime_msec(void)
+{
+    struct timespec tp;
+    clock_gettime(CLOCK_MONOTONIC, &tp);
+    return tp.tv_sec*1000 + tp.tv_nsec*1e-6;
+}
+
 /************
  * kt_for() *
  ************/
@@ -83,7 +95,8 @@ static void *ktf_worker_map(void *data)
 	ktf_worker_map_t *w = (ktf_worker_map_t*)data;
 	long i;
     int tid = w - w->t->w;
-
+    double t1, t2;
+    t1 = realtime_msec();
 	for (;;) {
 		i = __sync_fetch_and_add(&w->i, w->t->n_threads);
 		if (i >= w->t->n) break;
@@ -91,14 +104,20 @@ static void *ktf_worker_map(void *data)
 	}
 	while ((i = steal_map_work(w->t)) >= 0)
 		w->t->func(w->t->data, i, w - w->t->w, w->params);
-
+    t2 = realtime_msec();
+    send_task1[tid] += (t2 - t1);
+    
     if(w->t->last_func != NULL) {
         w->t->last_func(w->params, tid);
     }
+    t1 = realtime_msec();
+    send_task2[tid] += (t1 - t2);
     
     if(w->t->extra_func != NULL) {
         w->t->extra_func(w->params);
     }
+    t2 = realtime_msec();
+    process_result[tid] += (t2 - t1);
     
 	pthread_exit(0);
 }

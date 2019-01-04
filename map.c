@@ -2,6 +2,7 @@
 #include <string.h>
 #include <assert.h>
 #include <pthread.h>
+#include <unistd.h>
 #include "kthread.h"
 #include "kvec.h"
 #include "kalloc.h"
@@ -11,8 +12,6 @@
 #include "khash.h"
 
 #include "fpga_chaindp.h"
-
-void* result_thread(void* args);
 
 
 struct mm_idx_bucket_s;
@@ -26,6 +25,19 @@ static int g_parm_skip = 0;
 static int g_parm_issplic = 0;
 static int g_parm_score = 0;
 
+static int g_result_tid = 0;
+
+extern double result_time[100];
+extern double soft_chaindp_time[100];
+extern int soft_chaindp_num;
+#include <sys/time.h>
+#include<time.h>
+static double realtime_msec(void)
+{
+    struct timespec tp;
+    clock_gettime(CLOCK_MONOTONIC, &tp);
+    return tp.tv_sec*1000 + tp.tv_nsec*1e-6;
+}
 
 struct mm_tbuf_s {
 	void *km;
@@ -337,7 +349,7 @@ void mm_map_frag(const mm_idx_t *mi, int n_segs, const int *qlens, const char **
    
     unsigned int bid = dichotomy_sort(qname, mi->rname_rid, mi->n_seq);
     
-	collect_minimizers(b->km, opt, mi, n_segs, qlens, seqs, &mv);
+	collect_minimizers(NULL, opt, mi, n_segs, qlens, seqs, &mv);
     if(mv.n == 0) {
         __sync_sub_and_fetch(&params->read_num, 1);
         return;
@@ -387,14 +399,15 @@ void mm_map_frag(const mm_idx_t *mi, int n_segs, const int *qlens, const char **
     task->bid = bid;
     task->n_segs = n_segs;
     task->b = mi->b;
-    task->mv_a = (mm128_t*)malloc(mv.n * sizeof(mm128_t));
-    memcpy(task->mv_a, mv.a, mv.n * sizeof(mm128_t));
+    //task->mv_a = (mm128_t*)malloc(mv.n * sizeof(mm128_t));
+    //memcpy(task->mv_a, mv.a, mv.n * sizeof(mm128_t));
+    task->mv_a = mv.a;
     
     if(mv.n == 0) {
         fprintf(stderr, "WARNING:seed num = 0, read_id=%ld\n", read_id);
     }
     
-    kfree(b->km, mv.a);
+    //kfree(b->km, mv.a);
     
     assert(params->tasks[read_id] == NULL);
     params->tasks[read_id] = task;
@@ -637,6 +650,7 @@ static void *worker_pipeline(void *shared, int step, void *in)
 		} else free(s);
     } else if (step == 1) { // step 1: map
         int i = 0;
+        double t1, t2;
         user_params_t params;
         memset(&params, 0, sizeof(params));
         params.read_num = ((step_t*)in)->n_frag;
@@ -659,8 +673,10 @@ static void *worker_pipeline(void *shared, int step, void *in)
         
         params.exit = 1;
         
-        pthread_t result_tid[10];
-        for(i = 0; i < 10; i++) {
+        g_result_tid = 0;
+        
+        pthread_t result_tid[40];
+        for(i = 0; i < 40; i++) {
             pthread_create(&result_tid[i], NULL, result_thread, &params);
         }
 
@@ -674,12 +690,13 @@ static void *worker_pipeline(void *shared, int step, void *in)
         g_parm_issplic = !!(p->opt->flag & MM_F_SPLICE);
         g_parm_score = p->opt->min_chain_score;
 
-		//kt_for_map(p->n_threads, worker_for, in, ((step_t*)in)->n_frag, (void *)&params, last_send, NULL);
-        kt_for_map(p->n_threads - 10, worker_for, in, ((step_t*)in)->n_frag, (void *)&params, last_send, result_thread);
+		t1 = realtime_msec();
+        kt_for_map(p->n_threads - 40, worker_for, in, ((step_t*)in)->n_frag, (void *)&params, last_send, result_thread);
         
-        for(i = 0; i < 10; i++)
+        for(i = 0; i < 40; i++)
             pthread_join(result_tid[i], NULL);
-        
+        t2 = realtime_msec();
+        fprintf(stderr, "collect + chaindp=%.3f\n", t2 - t1);
         for(i = 0; i < p->n_threads; i++) {
             free(params.send_task[i].tasks);
         }
@@ -735,7 +752,9 @@ static void *worker_pipeline(void *shared, int step, void *in)
 
 int mm_map_file_frag(const mm_idx_t *idx, int n_segs, const char **fn, const mm_mapopt_t *opt, int n_threads)
 {
+    double t1, t2;
 	int i, j, pl_threads;
+    t1 = realtime_msec();
 	pipeline_t pl;
 	if (n_segs < 1) return -1;
 	memset(&pl, 0, sizeof(pipeline_t));
@@ -756,11 +775,19 @@ int mm_map_file_frag(const mm_idx_t *idx, int n_segs, const char **fn, const mm_
 	pl.n_threads = n_threads > 1? n_threads : 1;
 	pl.mini_batch_size = opt->mini_batch_size;
 	pl_threads = n_threads == 1? 1 : (opt->flag&MM_F_2_IO_THREADS)? 3 : 2;
+    t2 = realtime_msec();
+    fprintf(stderr, "mm_map_file_frag 1 time:%.3f\n", t2 - t1);
+    t1 = realtime_msec();
 	kt_pipeline(pl_threads, worker_pipeline, &pl, 3);
+    t2 = realtime_msec();
+    fprintf(stderr, "mm_map_file_frag 2 time:%.3f\n", t2 - t1);
+    t1 = realtime_msec();
 	free(pl.str.s);
 	for (i = 0; i < n_segs; ++i)
 		mm_bseq_close(pl.fp[i]);
 	free(pl.fp);
+    t2 = realtime_msec();
+    fprintf(stderr, "mm_map_file_frag 3 time:%.3f\n", t2 - t1);
 	return 0;
 }
 
@@ -857,13 +884,15 @@ void* result_thread(void* args)
 {
     int ret;
     int i = 0;
+    double t1, t2;
     user_params_t *params = (user_params_t *)args;
-    
     buf_info_t result;
+    int tid = __sync_fetch_and_add(&g_result_tid, 1);
     
     while(params->exit) {
         ret = get_fpga_result(&result);
         if(ret == 1) {
+            usleep(500);
             continue;
         }
         
@@ -891,12 +920,15 @@ void* result_thread(void* args)
                 collect_task_t* task = params->tasks[read_id];
                 int64_t n_a = 0;
                 //on fpga
+                __sync_add_and_fetch(&soft_chaindp_num, 1);
+                double t1 = realtime_msec();
                 mm128_t *a = collect_seed_hits(g_parm_flag, g_parm_midocc, task->mv_a, task->seednum, task->bid, task->qlensum, &n_a, &rep_len, &n_minipos, &mini_pos);
                 fpga_a = mm_chain_dp_fpga(task->gap_ref, task->gap_qry, g_parm_bw, g_parm_skip, g_parm_score, g_parm_issplic, task->n_segs, n_a, a, &new_i);
+                double t2 = realtime_msec();
+                soft_chaindp_time[tid] += (t2 - t1);
             }
             
             context_t* context = params->read_contexts[read_id];
-            
             ret = read_result_handle(context, n_minipos, mini_pos, fpga_a, new_i, rep_len, read_id);
             if(ret == 0) {  //正确处理，判断所有read是否处理完成
                 if(out_sub_head->err_flag == 1) {   //如果是软件处理，则将生成的结果释放

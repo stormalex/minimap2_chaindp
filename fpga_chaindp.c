@@ -6,8 +6,21 @@
 
 #include "fpga_chaindp.h"
 
+extern int max_task;
+
+static int task_num = 0;
+
+#include <sys/time.h>
+#include<time.h>
+static double realtime_msec(void)
+{
+    struct timespec tp;
+    clock_gettime(CLOCK_MONOTONIC, &tp);
+    return tp.tv_sec*1000 + tp.tv_nsec*1e-6;
+}
+
 //保存发送任务的队列
-#define QUEUE_MAX    4096
+#define QUEUE_MAX    40960
 static buf_info_t tasks[QUEUE_MAX];
 static pthread_mutex_t tasks_mutex = PTHREAD_MUTEX_INITIALIZER;
 static int tasks_head = 0;
@@ -71,23 +84,41 @@ void* send_task_thread(void* arg)
 {
     int magic_idx = 0;
     buf_info_t task;
+    double t1, t2;
+    double start, end;
+    double time = 0;
+    double time_1 = 0;
+    double time_2 = 0;
+    double time_3 = 0;
     
     while(fpga_send_task_stop) {
         if(get_fpga_task(&task)) {
             continue;
         }
+        t1 = realtime_msec();
         chaindp_sndhdr_t* head = (chaindp_sndhdr_t*)task.buf;      //包头指针
         head->magic = magic_idx;
         magic_idx++;
 #if FPGA_ON
         void* fpga_buf;
+        start = realtime_msec();
         fpga_buf = fpga_get_writebuf(task.size, BUF_TYPE_SW);
         if(fpga_buf == NULL) {
             fprintf(stderr, "fpga_get_writebuf return NULL\n");
             exit(1);
         }
+        
+        end = realtime_msec();
+        time_1 += (end - start);
+        
         memcpy(fpga_buf, task.buf, task.size);
+        start = realtime_msec();
+        time_2 += (start - end);
+        
         fpga_writebuf_submit(fpga_buf, task.size, TYPE_CD);
+        int tmp = __sync_add_and_fetch(&task_num, 1);
+        if(tmp > max_task)
+            max_task = tmp;
 #else
         
         int out_size;
@@ -127,7 +158,14 @@ void* send_task_thread(void* arg)
         while(send_fpga_result(result));
 #endif
         free(task.buf);
+        
+        end = realtime_msec();
+        time_3 += (end - start);
+        
+        t2 = realtime_msec();
+        time += (t2 - t1);
     }
+    fprintf(stderr, "exit send fpga thread, time=%.3f, time_1=%.3f, time_2=%.3f, time_3=%.3f\n", time, time_1, time_2, time_3);
     return NULL;
 }
 
@@ -189,6 +227,8 @@ int get_fpga_result(buf_info_t* result)
 }
 void* recv_task_thread(void* arg)
 {
+    double t1, t2;
+    double time = 0;
     while(fpga_recv_result_stop) {
 #if FPGA_ON
         buf_info_t result;
@@ -196,13 +236,17 @@ void* recv_task_thread(void* arg)
         void* fpga_buf;
         fpga_buf = fpga_get_retbuf(&fpga_len, RET_TYPE_CS);
         if(fpga_len == 0) {
-            fprintf(stderr, "exit recv fpga thread\n");
+            fprintf(stderr, "exit recv fpga thread, time=%.3f\n", time);
             return NULL;
         }
         if(fpga_buf == NULL) {
             fprintf(stderr, "fpga_get_retbuf return NULL\n");
             exit(1);
         }
+        t1 = realtime_msec();
+        
+        __sync_sub_and_fetch(&task_num, 1);
+        
         result.buf = malloc(fpga_len);
         result.size = fpga_len;
         memcpy(result.buf, fpga_buf, result.size);
@@ -211,6 +255,8 @@ void* recv_task_thread(void* arg)
 #else
         usleep(500000);
 #endif
+        t2 = realtime_msec();
+        time += (t2 - t1);
     }
     return NULL;
 }
