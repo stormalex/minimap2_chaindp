@@ -428,11 +428,20 @@ void mm_map_frag(const mm_idx_t *mi, int n_segs, const int *qlens, const char **
             params->send_task[tid].data_size = 0;
         }
         //发送到fpga发送线程
-        buf_info_t buf_info;
+        /*buf_info_t buf_info;
         buf_info.buf = buf;
         buf_info.size = size;
         
-        while(send_fpga_task(buf_info));
+        while(send_fpga_task(buf_info));*/
+        
+        
+        void* fpga_buf = NULL;
+        while((fpga_buf = fpga_get_writebuf_thread(size, BUF_TYPE_SW, tid)) == NULL) {
+            usleep(50);
+        }
+        memcpy(fpga_buf, buf, size);
+        free(buf);
+        fpga_writebuf_submit(fpga_buf, size, TYPE_CD);
     }
     if (b->km) {
         km_stat(b->km, &kmst);
@@ -456,11 +465,19 @@ void last_send(void *data, int tid)
             params->send_task[tid].data_size = 0;
         }
         //发送到fpga发送线程
-        buf_info_t buf_info;
+        /*buf_info_t buf_info;
         buf_info.buf = buf;
         buf_info.size = size;
         
-        while(send_fpga_task(buf_info));
+        while(send_fpga_task(buf_info));*/
+        
+        void* fpga_buf = NULL;
+        while((fpga_buf = fpga_get_writebuf_thread(size, BUF_TYPE_SW, tid)) == NULL) {
+            usleep(50);
+        }
+        memcpy(fpga_buf, buf, size);
+        free(buf);
+        fpga_writebuf_submit(fpga_buf, size, TYPE_CD);
     }
 }
 
@@ -675,8 +692,8 @@ static void *worker_pipeline(void *shared, int step, void *in)
         
         g_result_tid = 0;
         
-        pthread_t result_tid[40];
-        for(i = 0; i < 40; i++) {
+        pthread_t result_tid[10];
+        for(i = 0; i < 10; i++) {
             pthread_create(&result_tid[i], NULL, result_thread, &params);
         }
 
@@ -691,9 +708,9 @@ static void *worker_pipeline(void *shared, int step, void *in)
         g_parm_score = p->opt->min_chain_score;
 
 		t1 = realtime_msec();
-        kt_for_map(p->n_threads - 40, worker_for, in, ((step_t*)in)->n_frag, (void *)&params, last_send, result_thread);
+        kt_for_map(p->n_threads - 10, worker_for, in, ((step_t*)in)->n_frag, (void *)&params, last_send, result_thread);
         
-        for(i = 0; i < 40; i++)
+        for(i = 0; i < 10; i++)
             pthread_join(result_tid[i], NULL);
         t2 = realtime_msec();
         fprintf(stderr, "collect + chaindp=%.3f\n", t2 - t1);
@@ -880,6 +897,33 @@ int read_result_handle(context_t* context, int n_minipos, uint64_t* mini_pos, st
     return 0;
 }
 
+static void printf_64_file(unsigned char* p, int n, FILE* fp)
+{
+    int i = 63;
+    if(n != 64)
+        return;
+    for(i = 63; i >=0; i--)
+        fprintf(fp, "%02x", p[i]);
+
+    return;
+}
+
+static void output_file(char* name, unsigned char* buf, int n)
+{
+    int i = 0;
+    FILE* fp = fopen(name, "w+");
+    if(fp) {
+        for(i = 0; i < n; i+=64) {
+            printf_64_file(&buf[i], 64, fp);
+            fprintf(fp, "\n");
+        }
+    }
+    else {
+        perror("fopen failed");
+    }
+    fclose(fp);
+}
+
 void* result_thread(void* args)
 {
     int ret;
@@ -892,14 +936,15 @@ void* result_thread(void* args)
     while(params->exit) {
         ret = get_fpga_result(&result);
         if(ret == 1) {
-            usleep(500);
+            usleep(50);
             continue;
         }
         
         chaindp_sndhdr_t* out_head = (chaindp_sndhdr_t*)result.buf;
         collect_result_t* out_sub_head = (collect_result_t*)(result.buf + sizeof(chaindp_sndhdr_t));
-    
-    
+        
+        //output_file("fpga_out.txt", (unsigned char*)result.buf, result.size);
+        
         for(i = 0; i < out_head->num; i++) {
             char* p = (char*)out_sub_head;
             int n_minipos = out_sub_head->n_minipos;
@@ -916,7 +961,7 @@ void* result_thread(void* args)
             int rep_len = out_sub_head->rep_len;
             
             if(out_sub_head->err_flag == 1) {   //硬件处理不了的数据，软件处理
-                fprintf(stderr, "soft process, read_id=%u\n", read_id);
+                //fprintf(stderr, "soft process, read_id=%u\n", read_id);
                 collect_task_t* task = params->tasks[read_id];
                 int64_t n_a = 0;
                 //on fpga
@@ -948,7 +993,7 @@ void* result_thread(void* args)
                 if(read_num_tmp == 0) { //所有read处理完成
                     free(result.buf);   //释放结果buf
                     params->exit = 0;
-                    fprintf(stderr, "1.exit result_thread\n");
+                    //fprintf(stderr, "1.exit result_thread\n");
                     return NULL;
                 }
             }
@@ -959,6 +1004,6 @@ void* result_thread(void* args)
         }
         free(result.buf);   //释放结果buf
     }
-    fprintf(stderr, "2.exit result_thread\n");
+    //fprintf(stderr, "2.exit result_thread\n");
     return NULL;
 }

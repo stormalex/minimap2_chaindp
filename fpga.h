@@ -35,12 +35,14 @@ typedef enum {
 }RET_TYPE;
 
 int fpga_init(int flag);
+int fpga_init_noreset(int noblock);
 void fpga_finalize();
 
 void* fpga_get_retbuf(int* len, RET_TYPE type);         //获取一个结果缓冲区，数据可用
 int fpga_release_retbuf(void* addr);               //释放一个结果缓冲区
 
 void* fpga_get_writebuf(unsigned long size, BUF_TYPE type);                   //获得一个写缓冲区
+void* fpga_get_writebuf_thread(unsigned long size, BUF_TYPE type, int tid);
 int fpga_writebuf_submit(void* addr, unsigned int size, unsigned int type);    //向FPGA提交写缓冲区数据
 
 int fpga_init_sw(void* parameters);

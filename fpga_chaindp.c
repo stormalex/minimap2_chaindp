@@ -228,21 +228,30 @@ int get_fpga_result(buf_info_t* result)
 void* recv_task_thread(void* arg)
 {
     double t1, t2;
+    double wait_time = 0;
     double time = 0;
+    unsigned long counter = 0;
     while(fpga_recv_result_stop) {
 #if FPGA_ON
         buf_info_t result;
         int fpga_len;
         void* fpga_buf;
+        if(counter > 0)
+            t1 = realtime_msec();
         fpga_buf = fpga_get_retbuf(&fpga_len, RET_TYPE_CS);
         if(fpga_len == 0) {
-            fprintf(stderr, "exit recv fpga thread, time=%.3f\n", time);
+            fprintf(stderr, "exit recv fpga thread, time=%.3f wait_time=%.3f\n", time, wait_time);
             return NULL;
         }
         if(fpga_buf == NULL) {
             fprintf(stderr, "fpga_get_retbuf return NULL\n");
             exit(1);
         }
+        if(counter > 0){
+            t2 = realtime_msec();
+            wait_time += (t2 - t1);
+        }
+        counter++;
         t1 = realtime_msec();
         
         __sync_sub_and_fetch(&task_num, 1);
@@ -252,11 +261,11 @@ void* recv_task_thread(void* arg)
         memcpy(result.buf, fpga_buf, result.size);
         fpga_release_retbuf(fpga_buf);
         while(send_fpga_result(result));
+        t2 = realtime_msec();
+        time += (t2 - t1);
 #else
         usleep(500000);
 #endif
-        t2 = realtime_msec();
-        time += (t2 - t1);
     }
     return NULL;
 }
