@@ -115,6 +115,142 @@ double process_result[100];
 double soft_chaindp_time[100];
 int soft_chaindp_num = 0;
 
+typedef struct _params{
+    mm_idx_reader_t* idx_rdr;
+    mm_idx_t* mi[2];
+    mm_mapopt_t* opt;
+    int n_threads;
+    pthread_mutex_t mutex;
+    pthread_cond_t cond_r;
+    pthread_cond_t cond_w;
+    int counter;
+    int exit;
+    
+    char *rg;
+    int argc;
+    char **argv;
+}params_t;
+
+void *read_task_thread(void* args)
+{
+    int mi_index = 0;
+    params_t* params = (params_t*)args;
+    mm_idx_reader_t *idx_rdr = params->idx_rdr;
+    int n_threads = params->n_threads;
+    
+    while(params->exit) {
+        pthread_mutex_lock(&params->mutex);
+        mm_idx_t* mi = params->mi[mi_index];
+        if(mi == NULL) {
+            mi = mm_idx_reader_read(idx_rdr, n_threads);
+            params->mi[mi_index] = mi;
+            pthread_cond_signal(&params->cond_r);
+            pthread_mutex_unlock(&params->mutex);
+            mi_index++;
+            if(mi_index == 2) {
+                mi_index = 0;
+            }
+        }
+        else {
+            fprintf(stderr, "wait idle mi\n");
+            pthread_cond_wait(&params->cond_w, &params->mutex);
+            pthread_mutex_unlock(&params->mutex);
+            continue;
+        }
+    }
+    
+    
+    
+    return NULL;
+}
+void load_index_buf(idx_buf_t* idx_buf, int type);
+void idx_buf_destroy(idx_buf_t* idx_buf);
+void *map_task_thread(void* args)
+{
+    int i = 0;
+    int mi_index = 0;
+    params_t* params = (params_t*)args;
+    mm_idx_reader_t *idx_rdr = params->idx_rdr;
+    mm_mapopt_t* opt = params->opt;
+    char *rg = params->rg;
+    char **argv = params->argv;
+    int argc = params->argc;
+    int n_threads = params->n_threads;
+    
+    while(params->exit) {
+        pthread_mutex_lock(&params->mutex);
+        mm_idx_t* mi = params->mi[mi_index];
+        pthread_mutex_unlock(&params->mutex);
+        if(mi != NULL) {
+            
+            //load index
+            load_index_buf(mi->b_idx, TYPE_INDEX_B);
+            load_index_buf(mi->h_idx, TYPE_INDEX_H);
+            load_index_buf(mi->v_idx, TYPE_INDEX_V);
+            load_index_buf(mi->p_idx, TYPE_INDEX_P);
+            idx_buf_destroy(mi->b_idx);
+            idx_buf_destroy(mi->h_idx);
+            idx_buf_destroy(mi->v_idx);
+            idx_buf_destroy(mi->p_idx);
+            mi->b_idx = NULL;
+            mi->h_idx = NULL;
+            mi->v_idx = NULL;
+            mi->p_idx = NULL;
+            
+            if ((opt->flag & MM_F_CIGAR) && (mi->flag & MM_I_NO_SEQ)) {
+                fprintf(stderr, "[ERROR] the prebuilt index doesn't contain sequences.\n");
+                mm_idx_destroy(mi);
+                mm_idx_reader_close(idx_rdr);
+                return NULL;
+            }
+            
+            if ((opt->flag & MM_F_OUT_SAM) && idx_rdr->n_parts == 1) {
+                if (mm_idx_reader_eof(idx_rdr)) {
+                    mm_write_sam_hdr(mi, rg, MM_VERSION, argc, argv);
+                } else {
+                    mm_write_sam_hdr(0, rg, MM_VERSION, argc, argv);
+                    if (mm_verbose >= 2)
+                        fprintf(stderr, "[WARNING]\033[1;31m For a multi-part index, no @SQ lines will be outputted.\033[0m\n");
+                }
+            }
+            
+            if (mm_verbose >= 3)
+			fprintf(stderr, "[M::%s::%.3f*%.2f] loaded/built the index for %d target sequence(s)\n",
+					__func__, realtime() - mm_realtime0, cputime() / (realtime() - mm_realtime0), mi->n_seq);
+            if (argc != optind + 1) mm_mapopt_update(opt, mi);
+
+            if (mm_verbose >= 3) mm_idx_stat(mi);
+
+            //bw,  is_cdna,  max_skip,  min_sc,  flag,  max_occ
+            fprintf(stderr, "fpga params:bw:0x%x, is_cdna:0x%x, max_skip:0x%x, min_sc:0x%x, flag:0x%x, max_occ:0x%x\n", opt->bw, !!(opt->flag & MM_F_SPLICE), opt->max_chain_skip, opt->min_chain_score, opt->flag, opt->mid_occ);
+            fpga_set_params(opt->bw, !!(opt->flag & MM_F_SPLICE), opt->max_chain_skip, opt->min_chain_score, opt->flag, opt->mid_occ);  //data1
+
+            if (!(opt->flag & MM_F_FRAG_MODE)) {
+                for (i = optind + 1; i < argc; ++i)
+                    mm_map_file(mi, argv[i], opt, n_threads);
+            } else {
+                mm_map_file_frag(mi, argc - (optind + 1), (const char**)&argv[optind + 1], opt, n_threads);
+            }
+
+            mm_idx_destroy(mi);
+            pthread_mutex_lock(&params->mutex);
+            params->mi[mi_index] = 0;
+            pthread_mutex_unlock(&params->mutex);
+            pthread_cond_signal(&params->cond_w);       //唤醒写线程
+            mi_index++;
+            if(mi_index == 2) {
+                mi_index = 0;
+            }
+        }
+        else {
+            fprintf(stderr, "wait usable mi\n");
+            pthread_cond_wait(&params->cond_r, &params->mutex);
+            pthread_mutex_unlock(&params->mutex);
+        }
+    }
+    return NULL;
+}
+
 int main(int argc, char *argv[])
 {
 	const char *opt_str = "2aSDw:k:K:t:r:f:Vv:g:G:I:d:XT:s:x:Hcp:M:n:z:A:B:O:E:m:N:Qu:R:hF:LC:y";
@@ -361,6 +497,11 @@ int main(int argc, char *argv[])
     
     t2 = realtime_msec();
     fprintf(stderr, "init time=%.3f\n", t2 - t1);
+    
+    pthread_t read_tid, map_tid;
+    //pthread_create(&read_tid, NULL, read_task_thread, );
+    //pthread_create(&map_tid, NULL, map_task_thread, );
+    
     while ((mi = mm_idx_reader_read(idx_rdr, n_threads)) != 0) {
         double t1, t2;
         t1 = realtime_msec();
@@ -413,9 +554,6 @@ int main(int argc, char *argv[])
 		} else {
 			mm_map_file_frag(mi, argc - (optind + 1), (const char**)&argv[optind + 1], &opt, n_threads);
 		}
-
-        free(mi->rever_rid);
-        free(mi->rname_rid);
 
 		mm_idx_destroy(mi);
         t2 = realtime_msec();

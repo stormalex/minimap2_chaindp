@@ -897,38 +897,10 @@ int read_result_handle(context_t* context, int n_minipos, uint64_t* mini_pos, st
     return 0;
 }
 
-static void printf_64_file(unsigned char* p, int n, FILE* fp)
-{
-    int i = 63;
-    if(n != 64)
-        return;
-    for(i = 63; i >=0; i--)
-        fprintf(fp, "%02x", p[i]);
-
-    return;
-}
-
-static void output_file(char* name, unsigned char* buf, int n)
-{
-    int i = 0;
-    FILE* fp = fopen(name, "w+");
-    if(fp) {
-        for(i = 0; i < n; i+=64) {
-            printf_64_file(&buf[i], 64, fp);
-            fprintf(fp, "\n");
-        }
-    }
-    else {
-        perror("fopen failed");
-    }
-    fclose(fp);
-}
-
 void* result_thread(void* args)
 {
     int ret;
     int i = 0;
-    double t1, t2;
     user_params_t *params = (user_params_t *)args;
     buf_info_t result;
     int tid = __sync_fetch_and_add(&g_result_tid, 1);
@@ -942,8 +914,6 @@ void* result_thread(void* args)
         
         chaindp_sndhdr_t* out_head = (chaindp_sndhdr_t*)result.buf;
         collect_result_t* out_sub_head = (collect_result_t*)(result.buf + sizeof(chaindp_sndhdr_t));
-        
-        //output_file("fpga_out.txt", (unsigned char*)result.buf, result.size);
         
         for(i = 0; i < out_head->num; i++) {
             char* p = (char*)out_sub_head;

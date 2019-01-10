@@ -92,12 +92,7 @@ typedef struct _buf_info{
     int type;
 }buf_info_t;
 
-typedef struct _idx_buf{
-    char* buf_name;
-    char* buf;
-    unsigned long long size;
-    unsigned long long pos;
-}idx_buf_t;
+typedef struct _idx_buf idx_buf_t;
 
 int send_fpga_task(buf_info_t task);
 int get_fpga_task(buf_info_t* task);

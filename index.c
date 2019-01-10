@@ -50,6 +50,124 @@ static double realtime_msec(void)
 }
 #endif
 
+idx_buf_t* idx_buf_create()
+{
+    idx_buf_t* idx_buf = (idx_buf_t*)malloc(sizeof(idx_buf_t));
+    if(idx_buf) {
+        idx_buf->buf = (char*)malloc(INDEX_BUF_SIZE);
+        idx_buf->size = INDEX_BUF_SIZE;
+        idx_buf->pos = 0;
+    }
+    return idx_buf;
+}
+
+int idx_buf_write64(idx_buf_t* idx_buf, uint8_t* data, int n)
+{
+    int i = 0;
+    if(idx_buf->pos + n >= idx_buf->size) {
+        idx_buf->size += INDEX_BUF_SIZE;
+        idx_buf->buf = (char*)realloc(idx_buf->buf, idx_buf->size);
+        if(idx_buf->buf == NULL) {
+            fprintf(stderr, "realloc failed\n");
+            exit(1);
+        }
+    }
+    for(i = 0; i < n; i++) {
+        idx_buf->buf[idx_buf->pos++] = data[i];
+    }
+    return n;
+}
+
+void idx_buf_write_to_file(idx_buf_t* idx_buf, char* file_name)
+{
+    FILE* fp = fopen(file_name, "a+");
+    if(fp) {
+        int ret = fwrite(idx_buf->buf, idx_buf->pos, 1, fp);
+        if(ret != 1) {
+            fprintf(stderr, "write %s failed:%s\n", file_name, strerror(errno));
+            exit(1);
+        }
+        fclose(fp);
+        idx_buf->pos = 0;
+    }
+    return;
+}
+
+void idx_buf_destroy(idx_buf_t* idx_buf)
+{
+    free(idx_buf->buf);
+    free(idx_buf);
+}
+
+void load_index_buf(idx_buf_t* idx_buf, int type)
+{
+    unsigned long long size = idx_buf->pos;
+    unsigned long long i = 0;
+    
+    while(size > INDEX_LOAD_SIZE) {
+        fpga_load_index(&idx_buf->buf[i], INDEX_LOAD_SIZE, type);
+        size -= INDEX_LOAD_SIZE;
+        i += INDEX_LOAD_SIZE;
+    }
+    if(size > 0) {
+        unsigned long long tmp_size = ADDR_ALIGN(size, 64);
+        fpga_load_index(&idx_buf->buf[i], tmp_size, type);
+        i += size;
+    }
+    fprintf(stderr, "load size:%lld buf type:%d\n", i, type);
+    return;
+}
+
+void load_index(char* file_name, int type)
+{
+    int ret = 0;
+    struct stat stat;
+    char* buf = NULL;
+    long size = 0;
+    
+    fprintf(stderr, "load index:%s\n", file_name);
+    FILE* fp = fopen(file_name, "r");
+    if(fp == NULL) {
+        perror("fopen failed\n");
+        exit(1);
+    }
+    
+    ret = lstat(file_name, &stat);
+    if(ret) {
+        perror("ERROR:fstat failed!");
+        exit(1);
+    }
+    //size = ((stat.st_size + 64 - 1) & (~(64 - 1)));
+    size = stat.st_size;
+    while(size > INDEX_LOAD_SIZE) {
+        buf = (char*)malloc(INDEX_LOAD_SIZE);
+        memset(buf, 0, INDEX_LOAD_SIZE);
+        ret = fread(buf, 1, INDEX_LOAD_SIZE, fp);
+        if(ret != INDEX_LOAD_SIZE) {
+            perror("1.fread failed");
+            exit(1);
+        }
+        fpga_load_index(buf, INDEX_LOAD_SIZE, type);
+        free(buf);
+        size -= INDEX_LOAD_SIZE;
+    }
+    if(size > 0) {
+        long tmp_size = ADDR_ALIGN(size, 64);
+        buf = (char*)malloc(tmp_size);
+        memset(buf, 0, tmp_size);
+        ret = fread(buf, 1, size, fp);
+        if(ret != size) {
+            perror("2.fread failed");
+            exit(1);
+        }
+        fpga_load_index(buf, tmp_size, type);
+        free(buf);
+    }
+    
+    fclose(fp);
+    return;
+}
+
 mm_idx_t *mm_idx_init(int w, int k, int b, int flag)
 {
 	mm_idx_t *mi;
@@ -59,6 +177,12 @@ mm_idx_t *mm_idx_init(int w, int k, int b, int flag)
 	mi->w = w, mi->k = k, mi->b = b, mi->flag = flag;
 	mi->B = (mm_idx_bucket_t*)calloc(1<<b, sizeof(mm_idx_bucket_t));
 	if (!(mm_dbg_flag & 1)) mi->km = km_init();
+    
+    mi->b_idx = idx_buf_create();
+    mi->h_idx = idx_buf_create();
+    mi->v_idx = idx_buf_create();
+    mi->p_idx = idx_buf_create();
+    
 	return mi;
 }
 
@@ -66,6 +190,20 @@ void mm_idx_destroy(mm_idx_t *mi)
 {
 	int i;
 	if (mi == 0) return;
+    
+    if(mi->b_idx)
+        idx_buf_destroy(mi->b_idx);
+    if(mi->h_idx)
+        idx_buf_destroy(mi->h_idx);
+    if(mi->v_idx)
+        idx_buf_destroy(mi->v_idx);
+    if(mi->p_idx)
+        idx_buf_destroy(mi->p_idx);
+    
+    if(mi->rever_rid)
+        free(mi->rever_rid);
+    if(mi->rname_rid)
+        free(mi->rname_rid);
 	if (mi->h) kh_destroy(str, (khash_t(str)*)mi->h);
 	for (i = 0; i < 1<<mi->b; ++i) {
 		free(mi->B[i].p);
@@ -385,123 +523,7 @@ static void *worker_pipeline(void *shared, int step, void *in)
     return 0;
 }
 
-idx_buf_t* idx_buf_create()
-{
-    idx_buf_t* idx_buf = (idx_buf_t*)malloc(sizeof(idx_buf_t));
-    if(idx_buf) {
-        idx_buf->buf = (char*)malloc(INDEX_BUF_SIZE);
-        idx_buf->size = INDEX_BUF_SIZE;
-        idx_buf->pos = 0;
-    }
-    return idx_buf;
-}
 
-int idx_buf_write64(idx_buf_t* idx_buf, uint8_t* data, int n)
-{
-    int i = 0;
-    if(idx_buf->pos + n >= idx_buf->size) {
-        idx_buf->size += INDEX_BUF_SIZE;
-        idx_buf->buf = (char*)realloc(idx_buf->buf, idx_buf->size);
-        if(idx_buf->buf == NULL) {
-            fprintf(stderr, "realloc failed\n");
-            exit(1);
-        }
-    }
-    for(i = 0; i < n; i++) {
-        idx_buf->buf[idx_buf->pos++] = data[i];
-    }
-    return n;
-}
-
-void idx_buf_write_to_file(idx_buf_t* idx_buf, char* file_name)
-{
-    FILE* fp = fopen(file_name, "a+");
-    if(fp) {
-        int ret = fwrite(idx_buf->buf, idx_buf->pos, 1, fp);
-        if(ret != 1) {
-            fprintf(stderr, "write %s failed:%s\n", file_name, strerror(errno));
-            exit(1);
-        }
-        fclose(fp);
-        idx_buf->pos = 0;
-    }
-    return;
-}
-
-void idx_buf_destroy(idx_buf_t* idx_buf)
-{
-    free(idx_buf->buf);
-    free(idx_buf);
-}
-#if FPGA_ON
-void load_index(char* file_name, int type)
-{
-    int ret = 0;
-    struct stat stat;
-    char* buf = NULL;
-    long size = 0;
-    
-    fprintf(stderr, "load index:%s\n", file_name);
-    FILE* fp = fopen(file_name, "r");
-    if(fp == NULL) {
-        perror("fopen failed\n");
-        exit(1);
-    }
-    
-    ret = lstat(file_name, &stat);
-    if(ret) {
-        perror("ERROR:fstat failed!");
-        exit(1);
-    }
-    //size = ((stat.st_size + 64 - 1) & (~(64 - 1)));
-    size = stat.st_size;
-    while(size > INDEX_LOAD_SIZE) {
-        buf = (char*)malloc(INDEX_LOAD_SIZE);
-        memset(buf, 0, INDEX_LOAD_SIZE);
-        ret = fread(buf, 1, INDEX_LOAD_SIZE, fp);
-        if(ret != INDEX_LOAD_SIZE) {
-            perror("1.fread failed");
-            exit(1);
-        }
-        fpga_load_index(buf, INDEX_LOAD_SIZE, type);
-        free(buf);
-        size -= INDEX_LOAD_SIZE;
-    }
-    if(size > 0) {
-        long tmp_size = ADDR_ALIGN(size, 64);
-        buf = (char*)malloc(tmp_size);
-        memset(buf, 0, tmp_size);
-        ret = fread(buf, 1, size, fp);
-        if(ret != size) {
-            perror("2.fread failed");
-            exit(1);
-        }
-        fpga_load_index(buf, tmp_size, type);
-        free(buf);
-    }
-    
-    fclose(fp);
-    return;
-}
-void load_index_buf(idx_buf_t* idx_buf, int type)
-{
-    unsigned long long size = idx_buf->pos;
-    unsigned long long i = 0;
-    
-    while(size > INDEX_LOAD_SIZE) {
-        fpga_load_index(&idx_buf->buf[i], INDEX_LOAD_SIZE, type);
-        size -= INDEX_LOAD_SIZE;
-        i += INDEX_LOAD_SIZE;
-    }
-    if(size > 0) {
-        unsigned long long tmp_size = ADDR_ALIGN(size, 64);
-        fpga_load_index(&idx_buf->buf[i], tmp_size, type);
-        i += size;
-    }
-    fprintf(stderr, "load size:%lld buf type:%d\n", i, type);
-    return;
-}
-#endif
 mm_idx_t *mm_idx_gen(mm_bseq_file_t *fp, int w, int k, int b, int flag, int mini_batch_size, int n_threads, uint64_t batch_size)
 {
 	pipeline_t pl;
@@ -569,15 +591,12 @@ mm_idx_t *mm_idx_gen(mm_bseq_file_t *fp, int w, int k, int b, int flag, int mini
     //system("rm *.dat -f");
 
     double start, end;
+    mm_idx_t *mi = pl.mi;
     
     start = realtime_msec();
-    idx_buf_t* b_buf = idx_buf_create();
-    idx_buf_t* h_buf = idx_buf_create();
-    idx_buf_t* p_buf = idx_buf_create();
-    idx_buf_t* v_buf = idx_buf_create();
+    
     uint64_t allh = 0;
     uint64_t allp = 0;
-    mm_idx_t *mi = pl.mi;
     int i;
     for(i = 0;i < (1<<mi->b);++i){
         kh_idx_t* h = (idxhash_t*)mi->B[i].h;
@@ -591,7 +610,7 @@ mm_idx_t *mm_idx_gen(mm_bseq_file_t *fp, int w, int k, int b, int flag, int mini
             B[0] =(((allp&0xFF)<<56) | (n_buckets<<24));
             //if(idx_buf_write64(b_buf, (uint8_t *)B, 16) == 0) {
                 //idx_buf_write_to_file(b_buf, "idxb.dat");
-                idx_buf_write64(b_buf, (uint8_t *)B, 16);
+                idx_buf_write64(mi->b_idx, (uint8_t *)B, 16);
             //}
 
             allh += n_buckets;
@@ -611,14 +630,14 @@ mm_idx_t *mm_idx_gen(mm_bseq_file_t *fp, int w, int k, int b, int flag, int mini
                 a[0] = a[0]<<48;
                 //if(idx_buf_write64(h_buf, (uint8_t *)a, 16) == 0) {
                     //idx_buf_write_to_file(h_buf, "idxh.dat");
-                    idx_buf_write64(h_buf, (uint8_t *)a, 16);
+                    idx_buf_write64(mi->h_idx, (uint8_t *)a, 16);
                 //}
 
                 //Get Values Array
                 values = h->vals[j];//value是后期可能要优化为48bit    21-bit|22-bit|padding
                 //if(idx_buf_write64(v_buf, (uint8_t *)&values, 8) == 0) {
                     //idx_buf_write_to_file(v_buf, "idxv.dat");
-                    idx_buf_write64(v_buf, (uint8_t *)&values, 8);
+                    idx_buf_write64(mi->v_idx, (uint8_t *)&values, 8);
                 //}
             }
 
@@ -628,13 +647,13 @@ mm_idx_t *mm_idx_gen(mm_bseq_file_t *fp, int w, int k, int b, int flag, int mini
                 values = mi->B[i].p[j];
                 //if(idx_buf_write64(p_buf, (uint8_t *)&values, 8) == 0) {
                     //idx_buf_write_to_file(p_buf, "idxp.dat");
-                    idx_buf_write64(p_buf, (uint8_t *)&values, 8);
+                    idx_buf_write64(mi->p_idx, (uint8_t *)&values, 8);
                 //}
             }
         } else {
             //if(idx_buf_write64(b_buf, (uint8_t *)B, 16) == 0) {
                 //idx_buf_write_to_file(b_buf, "idxb.dat");
-                idx_buf_write64(b_buf, (uint8_t *)B, 16);
+                idx_buf_write64(mi->b_idx, (uint8_t *)B, 16);
             //}
         }
     }
@@ -649,15 +668,11 @@ mm_idx_t *mm_idx_gen(mm_bseq_file_t *fp, int w, int k, int b, int flag, int mini
     //load_index("idxv.dat", TYPE_INDEX_V);
     //load_index("idxp.dat", TYPE_INDEX_P);
     
-    load_index_buf(b_buf, TYPE_INDEX_B);
-    load_index_buf(h_buf, TYPE_INDEX_H);
-    load_index_buf(v_buf, TYPE_INDEX_V);
-    load_index_buf(p_buf, TYPE_INDEX_P);
+    //load_index_buf(mi->b_idx, TYPE_INDEX_B);
+    //load_index_buf(mi->h_idx, TYPE_INDEX_H);
+    //load_index_buf(mi->v_idx, TYPE_INDEX_V);
+    //load_index_buf(mi->p_idx, TYPE_INDEX_P);
     
-    idx_buf_destroy(b_buf);
-    idx_buf_destroy(h_buf);
-    idx_buf_destroy(p_buf);
-    idx_buf_destroy(v_buf);
     end = realtime_msec();
     fprintf(stderr, "create idx time:%.3f\n", end - start);
 #endif

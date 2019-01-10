@@ -66,6 +66,13 @@ typedef struct {
     char rname[256];
 } rname_rid_t ;
 
+typedef struct _idx_buf{
+    char* buf_name;
+    char* buf;
+    unsigned long long size;
+    unsigned long long pos;
+}idx_buf_t;
+
 typedef struct {
 	int32_t b, w, k, flag;
 	uint32_t n_seq;            // number of reference sequences
@@ -75,6 +82,10 @@ typedef struct {
 	void *km, *h;
     rname_rid_t *rname_rid;
     int *rever_rid;
+    idx_buf_t* b_idx;
+    idx_buf_t* h_idx;
+    idx_buf_t* p_idx;
+    idx_buf_t* v_idx;
 } mm_idx_t;
 
 // minimap2 alignment
