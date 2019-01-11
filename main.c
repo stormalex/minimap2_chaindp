@@ -123,7 +123,6 @@ typedef struct _params{
     pthread_mutex_t mutex;
     pthread_cond_t cond_r;
     pthread_cond_t cond_w;
-    int counter;
     int exit;
     
     char *rg;
@@ -141,18 +140,32 @@ void *read_task_thread(void* args)
     while(params->exit) {
         pthread_mutex_lock(&params->mutex);
         mm_idx_t* mi = params->mi[mi_index];
+        pthread_mutex_unlock(&params->mutex);
         if(mi == NULL) {
+            fprintf(stderr, "### start read %d mi\n", mi_index);
             mi = mm_idx_reader_read(idx_rdr, n_threads);
+            if(mi == NULL) {
+                params->exit = 0;
+                pthread_mutex_lock(&params->mutex);
+                params->mi[mi_index] = NULL;
+                pthread_cond_signal(&params->cond_r);
+                pthread_mutex_unlock(&params->mutex);
+                fprintf(stderr, "### exit read_task_thread\n");
+                return NULL;
+            }
+            pthread_mutex_lock(&params->mutex);
             params->mi[mi_index] = mi;
             pthread_cond_signal(&params->cond_r);
             pthread_mutex_unlock(&params->mutex);
+            fprintf(stderr, "### read %d mi done\n", mi_index);
+            
             mi_index++;
             if(mi_index == 2) {
                 mi_index = 0;
             }
         }
         else {
-            fprintf(stderr, "wait idle mi\n");
+            fprintf(stderr, "### wait idle mi\n");
             pthread_cond_wait(&params->cond_w, &params->mutex);
             pthread_mutex_unlock(&params->mutex);
             continue;
@@ -177,12 +190,13 @@ void *map_task_thread(void* args)
     int argc = params->argc;
     int n_threads = params->n_threads;
     
-    while(params->exit) {
+    while(1) {
+        fprintf(stderr, "### get mi %d\n", mi_index);
         pthread_mutex_lock(&params->mutex);
         mm_idx_t* mi = params->mi[mi_index];
         pthread_mutex_unlock(&params->mutex);
         if(mi != NULL) {
-            
+            fprintf(stderr, "### use %d mi\n", mi_index);
             //load index
             load_index_buf(mi->b_idx, TYPE_INDEX_B);
             load_index_buf(mi->h_idx, TYPE_INDEX_H);
@@ -201,6 +215,9 @@ void *map_task_thread(void* args)
                 fprintf(stderr, "[ERROR] the prebuilt index doesn't contain sequences.\n");
                 mm_idx_destroy(mi);
                 mm_idx_reader_close(idx_rdr);
+                
+                params->exit = 0;
+                fprintf(stderr, "### exit map_task_thread\n");
                 return NULL;
             }
             
@@ -235,17 +252,23 @@ void *map_task_thread(void* args)
             mm_idx_destroy(mi);
             pthread_mutex_lock(&params->mutex);
             params->mi[mi_index] = 0;
-            pthread_mutex_unlock(&params->mutex);
             pthread_cond_signal(&params->cond_w);       //唤醒写线程
+            pthread_mutex_unlock(&params->mutex);
+            
             mi_index++;
             if(mi_index == 2) {
                 mi_index = 0;
             }
         }
         else {
-            fprintf(stderr, "wait usable mi\n");
+            if(params->exit == 0) {
+                fprintf(stderr, "### exit map_task_thread\n");
+                return NULL;
+            }
+            fprintf(stderr, "### wait usable mi\n");
             pthread_cond_wait(&params->cond_r, &params->mutex);
             pthread_mutex_unlock(&params->mutex);
+            fprintf(stderr, "### wake up\n");
         }
     }
     return NULL;
@@ -499,10 +522,23 @@ int main(int argc, char *argv[])
     fprintf(stderr, "init time=%.3f\n", t2 - t1);
     
     pthread_t read_tid, map_tid;
-    //pthread_create(&read_tid, NULL, read_task_thread, );
-    //pthread_create(&map_tid, NULL, map_task_thread, );
+    params_t params;
+    params.idx_rdr = idx_rdr;
+    params.mi[0] = NULL;params.mi[1] = NULL;
+    params.opt = &opt;
+    params.n_threads = n_threads;
+    params.exit = 1;
+    params.rg = rg;
+    params.argc = argc;
+    params.argv = argv;
+    pthread_mutex_init(&params.mutex, NULL);
+    pthread_cond_init(&params.cond_w, NULL);
+    pthread_cond_init(&params.cond_r, NULL);
+
+    pthread_create(&read_tid, NULL, read_task_thread, &params);
+    pthread_create(&map_tid, NULL, map_task_thread, &params);
     
-    while ((mi = mm_idx_reader_read(idx_rdr, n_threads)) != 0) {
+    /*while ((mi = mm_idx_reader_read(idx_rdr, n_threads)) != 0) {
         double t1, t2;
         t1 = realtime_msec();
 		if ((opt.flag & MM_F_CIGAR) && (mi->flag & MM_I_NO_SEQ)) {
@@ -558,7 +594,11 @@ int main(int argc, char *argv[])
 		mm_idx_destroy(mi);
         t2 = realtime_msec();
         fprintf(stderr, "handle 5 time:%.3f\n", t2 - t1);
-	}
+	}*/
+    
+    pthread_join(read_tid, NULL);
+    pthread_join(map_tid, NULL);
+    
     t1 = realtime_msec();
 	mm_idx_reader_close(idx_rdr);
 
