@@ -523,6 +523,20 @@ static void *worker_pipeline(void *shared, int step, void *in)
     return 0;
 }
 
+typedef struct _key{
+    unsigned char a[6];
+}key48_t;
+
+void set_key(key48_t* key, uint64_t keys)
+{
+    int i = 0;
+    uint64_t t_keys = keys;
+    unsigned char* p = (unsigned char*)&t_keys;
+    for(i = 0; i < 6; i++) {
+        key->a[i] = p[i];
+    }
+}
+#define ADDR_ALIGN(addr, align)   (((addr)+(align)-1)&(~((align)-1)))
 
 mm_idx_t *mm_idx_gen(mm_bseq_file_t *fp, int w, int k, int b, int flag, int mini_batch_size, int n_threads, uint64_t batch_size)
 {
@@ -606,6 +620,7 @@ mm_idx_t *mm_idx_gen(mm_bseq_file_t *fp, int w, int k, int b, int flag, int mini
             //Get B Array
             uint64_t n_buckets;
             n_buckets = kh_end((idxhash_t*)mi->B[i].h);
+            uint64_t tmp_n_buckets = ADDR_ALIGN(n_buckets, 8);
             B[1] = allh << 28 | allp >> 8;
             B[0] =(((allp&0xFF)<<56) | (n_buckets<<24));
             //if(idx_buf_write64(b_buf, (uint8_t *)B, 16) == 0) {
@@ -613,32 +628,59 @@ mm_idx_t *mm_idx_gen(mm_bseq_file_t *fp, int w, int k, int b, int flag, int mini
                 idx_buf_write64(mi->b_idx, (uint8_t *)B, 16);
             //}
 
-            allh += n_buckets;
+            allh += tmp_n_buckets;
             allp += mi->B[i].n;
             //将 n_buckets h p 合并到128bit中，实际是拆分两个64bit 顺序分别为h-36bit|p-28bit|p-8bit|n_buckets-32bit|padding
-            for(int j = 0;j < n_buckets;++j){
-                uint64_t flags;
-                uint64_t keys;
-                flags = h->flags[j>>4];
-                keys = h->keys[j];
-                uint64_t a[2]={0};
-
-                //Get H Array
-                a[1] |= flags;
-                a[1] = (a[1] << 32) |((keys&0xffffffffffffUL)>>16);
-                a[0] |= keys&0xffff;
-                a[0] = a[0]<<48;
-                //if(idx_buf_write64(h_buf, (uint8_t *)a, 16) == 0) {
-                    //idx_buf_write_to_file(h_buf, "idxh.dat");
-                    idx_buf_write64(mi->h_idx, (uint8_t *)a, 16);
-                //}
-
-                //Get Values Array
-                values = h->vals[j];//value是后期可能要优化为48bit    21-bit|22-bit|padding
-                //if(idx_buf_write64(v_buf, (uint8_t *)&values, 8) == 0) {
-                    //idx_buf_write_to_file(v_buf, "idxv.dat");
+            for(int j = 0;j < tmp_n_buckets;++j){
+                if(j >= n_buckets) {
+                    fprintf(stderr, "n_buckets=%lu, tmp_n_buckets=%lu\n", n_buckets, tmp_n_buckets);
+                    uint64_t a = 0;
+                    idx_buf_write64(mi->h_idx, (uint8_t *)&a, 6);           //多出来的元素写0
+                    if((j+1)%8 == 0) {
+                        if(j > 0) {
+                            uint64_t a[2];
+                            a[0] = 0;
+                            a[1] = 0;
+                            idx_buf_write64(mi->h_idx, (uint8_t *)&a, 12);      //补齐12个字节
+                        }
+                    }
+                    
+                    //Get Values Array
+                    values = 0;//value是后期可能要优化为48bit    21-bit|22-bit|padding
+                    idx_buf_write64(mi->v_idx, (uint8_t *)&values, 8);      //多出来的元素写0
+                    continue;
+                }
+                else {
+                    uint64_t keys;
+                    keys = h->keys[j];
+                    key48_t key0;
+                    memset(&key0.a, 0, 6);
+                    if(j%8 == 0) {
+                        if(j > 0) {
+                            uint64_t a[2];
+                            a[0] = 0;
+                            a[1] = 0;
+                            idx_buf_write64(mi->h_idx, (uint8_t *)&a, 12);      //补齐12个字节
+                        }
+                        uint64_t flags;
+                        flags = h->flags[j>>4];
+                        uint32_t t_flags = (uint32_t)flags;
+                        idx_buf_write64(mi->h_idx, (uint8_t *)&t_flags, 4);     //写flags
+                    }
+                    set_key(&key0, keys);
+                    idx_buf_write64(mi->h_idx, (uint8_t *)key0.a, 6);     //写keys
+                    
+                    //Get Values Array
+                    values = h->vals[j];//value是后期可能要优化为48bit    21-bit|22-bit|padding
                     idx_buf_write64(mi->v_idx, (uint8_t *)&values, 8);
-                //}
+                }
+                
+                if(j == tmp_n_buckets-1) {
+                    uint64_t a[2];
+                    a[0] = 0;
+                    a[1] = 0;
+                    idx_buf_write64(mi->h_idx, (uint8_t *)&a, 12);      //补齐12个字节
+                }
             }
 
             //Get p Array
