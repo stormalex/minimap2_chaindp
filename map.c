@@ -251,7 +251,7 @@ typedef struct __attribute__((__packed__)) _ODPHDR {
     uint8_t padding[40];
 } ODPHDR;
 
-#define BUFFSIZE (16 * 1024 * 1024)
+#define BUFFSIZE (160 * 1024 * 1024)
 
 char* txtbuff;
 int ntxt;
@@ -269,7 +269,7 @@ char * gentxt(uint8_t *dat, int datlen)
     return txtbuff;
 }
 
-FILE *fcshi, *fcsho, *fdpi, *fdpo;
+//FILE *fcshi, *fcsho, *fdpi, *fdpo;
 FILE *fbcshi, *fbcsho, *fbdpi, *fbdpo;
 //FILE *fidxcall;
 //FILE *fbreq, *fhreq, *fvreq, *fpreq;
@@ -389,6 +389,7 @@ static mm128_t *collect_seed_hits(void *km, const mm_mapopt_t *opt, int max_occ,
 	}
 	kfree(km, m);
 	//added by LQX
+#if 0
 	FILE *fp = 0;
 	fp = fopen("./out0.txt", "a");
 	if(fp == NULL) fprintf(stderr,"open out0 file fail!\n");
@@ -402,6 +403,7 @@ static mm128_t *collect_seed_hits(void *km, const mm_mapopt_t *opt, int max_occ,
 	  /*fprintf(stderr, "%016lx,%016lx\n", a[k].x,a[k].y);*/
 	}
 	fclose(fp);
+#endif
 	radix_sort_128x(a, a + (*n_a));
 	//fprintf(stderr,"seed num %d\n",*n_a);
 
@@ -444,9 +446,9 @@ static mm128_t *collect_seed_hits(void *km, const mm_mapopt_t *opt, int max_occ,
 
             //write sim
             gentxt(gbuff, gbufflen);
-            fwrite(txtbuff, 1, ntxt, fcshi);
+            //fwrite(txtbuff, 1, ntxt, fcshi);
             gentxt(gobuff, gobufflen);
-            fwrite(txtbuff, 1, ntxt, fcsho);
+            //fwrite(txtbuff, 1, ntxt, fcsho);
 
             //write
             fwrite(gbuff, 1, gbufflen, fbcshi);
@@ -539,6 +541,7 @@ void mm_map_frag(const mm_idx_t *mi, int n_segs, const int *qlens, const char **
 		a = collect_seed_hits(b->km, opt, opt->mid_occ, mi, qname, &mv, bid, qlen_sum, &n_a, &rep_len, &n_mini_pos, &mini_pos);
 	//if(n_a == 0) {fprintf(stderr,"error!\n");}
 	//fprintf(stderr,"finish one read!\n");
+#if 0
 	FILE *fp = 0;
 	fp = fopen("./out1.txt", "a");
 	if(fp == NULL) fprintf(stderr,"open out1 file fail!\n");
@@ -563,6 +566,7 @@ void mm_map_frag(const mm_idx_t *mi, int n_segs, const int *qlens, const char **
 	  /*fprintf(stderr, "%016lx,%016lx\n", a[k].x,a[k].y);*/
 	}
 	fclose(fp);
+#endif
 	if (mm_dbg_flag & MM_DBG_PRINT_SEED) {
 		fprintf(stderr, "RS\t%d\n", rep_len);
 		for (i = 0; i < n_a; ++i)
@@ -720,7 +724,7 @@ static void worker_for(void *_data, long i, int tid) // kt_for() callback
 			}
 		}
 }
-
+extern int exec_count;
 static void *worker_pipeline(void *shared, int step, void *in)
 {
 	int i, j, k;
@@ -825,7 +829,7 @@ int mm_map_file_frag(const mm_idx_t *idx, int n_segs, const char **fn, const mm_
     fprintf(stderr, "------ bw: 0x%x, is_cnda: 0x%x\n", opt->bw, !!(opt->flag & MM_F_SPLICE));
     fprintf(stderr, "------ max_skip: 0x%x, min_sc: 0x%x\n", opt->max_chain_skip, opt->min_chain_score);
     fprintf(stderr, "------ max_occ: 0x%x, flag: 0x%x\n", opt->mid_occ, opt->flag);
-    if ((fcshi = fopen("cshinput.txt", "w")) == NULL) {
+    /*if ((fcshi = fopen("cshinput.txt", "w")) == NULL) {
         perror("open data file failed!");
         exit(1);
     }
@@ -840,21 +844,29 @@ int mm_map_file_frag(const mm_idx_t *idx, int n_segs, const char **fn, const mm_
     if ((fdpo = fopen("dpoutput.txt", "w")) == NULL) {
         perror("open data file failed!");
         exit(1);
-    }
-
-    if ((fbcshi = fopen("cshinput.dat", "wb")) == NULL) {
+    }*/
+    char buffer[64];
+    memset(buffer, 0, sizeof(buffer));
+    sprintf(buffer, "cshinput_%d.dat", exec_count);
+    if ((fbcshi = fopen(buffer, "wb")) == NULL) {
         perror("open data file failed!");
         exit(1);
     }
-    if ((fbcsho = fopen("cshoutput.dat", "wb")) == NULL) {
+    memset(buffer, 0, sizeof(buffer));
+    sprintf(buffer, "cshoutput_%d.dat", exec_count);
+    if ((fbcsho = fopen(buffer, "wb")) == NULL) {
         perror("open data file failed!");
         exit(1);
     }
-    if ((fbdpi = fopen("dpinput.dat", "wb")) == NULL) {
+    memset(buffer, 0, sizeof(buffer));
+    sprintf(buffer, "dpinput_%d.dat", exec_count);
+    if ((fbdpi = fopen(buffer, "wb")) == NULL) {
         perror("open data file failed!");
         exit(1);
     }
-    if ((fbdpo = fopen("dpoutput.dat", "wb")) == NULL) {
+    memset(buffer, 0, sizeof(buffer));
+    sprintf(buffer, "dpoutput_%d.dat", exec_count);
+    if ((fbdpo = fopen(buffer, "wb")) == NULL) {
         perror("open data file failed!");
         exit(1);
     }
@@ -901,16 +913,16 @@ int mm_map_file_frag(const mm_idx_t *idx, int n_segs, const char **fn, const mm_
 
 	kt_pipeline(pl_threads, worker_pipeline, &pl, 3);
 
-    fclose(fcshi);
-    fclose(fcsho);
-    fclose(fdpi);
-    fclose(fdpo);
+    //fclose(fcshi);
+    //fclose(fcsho);
+    //fclose(fdpi);
+    //fclose(fdpo);
 
     fclose(fbcshi);
     fclose(fbcsho);
     fclose(fbdpi);
     fclose(fbdpo);
-    system("./revert.py");
+    //system("./revert.py");
 
     //fclose(fidxcall);
     //fclose(fbreq);

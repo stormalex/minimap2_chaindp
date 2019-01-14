@@ -32,16 +32,17 @@ typedef struct _BBB {
     uint64_t h:36,hvalid:1, padding:27;
     uint64_t p:36,n_buckets:28;
 } BBB;
-int szb,szh,szp,szv;
-int write64(uint8_t *buff, int n, int nall, FILE* fp)
+unsigned long szb = 0,szh = 0,szp = 0,szv = 0;
+unsigned long write64(uint8_t *buff, int n, unsigned long nall, FILE* fp)
 {
-    int newn = nall + n;
+    unsigned long newn = nall;
     char s[64];
     for (int i = 0; i < n; i++) {
         fprintf(fp, "%02x", buff[i]);
-    }
-    if (newn % 64 == 0) {
-        fwrite("\n", 1, 1, fp);
+        newn++;
+        if(newn % 64 == 0) {
+            fwrite("\n", 1, 1, fp);
+        }
     }
     return newn;
 }
@@ -53,7 +54,7 @@ void write64_bin(uint8_t* buff, int n, FILE* fp)
     }
     return;
 }
-int fit4k(int nall, FILE* fp)
+int fit4k(unsigned long nall, FILE* fp)
 {
     uint8_t zero[64] = {0};
     if (nall % 64 != 0) {
@@ -67,7 +68,7 @@ int fit4k(int nall, FILE* fp)
             nall = write64((uint8_t *)zero, 64, nall, fp);
         }
     }
-    fprintf(stderr, "--- fit to %d\n", nall);
+    fprintf(stderr, "--- fit to %ld\n", nall);
     return nall;
 }
 
@@ -493,7 +494,22 @@ static void *worker_pipeline(void *shared, int step, void *in)
 	}
     return 0;
 }
+extern int exec_count;
 
+typedef struct _key{
+    unsigned char a[6];
+}key48_t;
+
+void set_key(key48_t* key, uint64_t keys)
+{
+    int i = 0;
+    uint64_t t_keys = keys;
+    unsigned char* p = (unsigned char*)&t_keys;
+    for(i = 0; i < 6; i++) {
+        key->a[i] = p[i];
+    }
+}
+#define ADDR_ALIGN(addr, align)   (((addr)+(align)-1)&(~((align)-1)))
 mm_idx_t *mm_idx_gen(mm_bseq_file_t *fp, int w, int k, int b, int flag, int mini_batch_size, int n_threads, uint64_t batch_size)
 {
 	pipeline_t pl;
@@ -504,7 +520,7 @@ mm_idx_t *mm_idx_gen(mm_bseq_file_t *fp, int w, int k, int b, int flag, int mini
 	pl.fp = fp;
 	pl.mi = mm_idx_init(w, k, b, flag);
 
-	kt_pipeline(n_threads < 3? n_threads : 3, worker_pipeline, &pl, 3);
+	kt_pipeline(3, worker_pipeline, &pl, 3);
 	if (mm_verbose >= 3)
 		fprintf(stderr, "[M::%s::%.3f*%.2f] collected minimizers\n", __func__, realtime() - mm_realtime0, cputime() / (realtime() - mm_realtime0));
 	#if 1
@@ -549,10 +565,10 @@ mm_idx_t *mm_idx_gen(mm_bseq_file_t *fp, int w, int k, int b, int flag, int mini
     uint8_t buff[1024];
     mm_idx_t *mi = pl.mi;
     int i, j;
-    FILE *fidxb, *fidxh, *fidxp, *fidxv;
+    //FILE *fidxb, *fidxh, *fidxp, *fidxv;
     FILE *fidxb_bin, *fidxh_bin, *fidxp_bin, *fidxv_bin;
-    //FILE *fidxbt, *fidxht, *fidxpt, *fidxvt;
-    if ((fidxb = fopen("idxb.txt", "w")) == NULL) {
+    FILE *fidxbt, *fidxht, *fidxpt, *fidxvt;
+    /*if ((fidxb = fopen("idxb.txt", "w")) == NULL) {
         perror("open data file failed!");
         exit(1);
     }
@@ -567,24 +583,33 @@ mm_idx_t *mm_idx_gen(mm_bseq_file_t *fp, int w, int k, int b, int flag, int mini
     if ((fidxv = fopen("idxv.txt", "w")) == NULL) {
         perror("open data file failed!");
         exit(1);
-    }
+    }*/
     /*if ((fidxbt = fopen("idxbt.txt", "w")) == NULL) {
         perror("open data file failed!");
         exit(1);
     }*/
-    if ((fidxb_bin = fopen("idxb.dat", "w")) == NULL) {
+    char buffer[64];
+    memset(buffer, 0, sizeof(buffer));
+    sprintf(buffer, "idxb_%d.dat", exec_count);
+    if ((fidxb_bin = fopen(buffer, "w")) == NULL) {
         perror("open data file failed!");
         exit(1);
     }
-    if ((fidxh_bin = fopen("idxh.dat", "w")) == NULL) {
+    memset(buffer, 0, sizeof(buffer));
+    sprintf(buffer, "idxh_%d.dat", exec_count);
+    if ((fidxh_bin = fopen(buffer, "w")) == NULL) {
         perror("open data file failed!");
         exit(1);
     }
-    if ((fidxp_bin = fopen("idxp.dat", "w")) == NULL) {
+    memset(buffer, 0, sizeof(buffer));
+    sprintf(buffer, "idxp_%d.dat", exec_count);
+    if ((fidxp_bin = fopen(buffer, "w")) == NULL) {
         perror("open data file failed!");
         exit(1);
     }
-    if ((fidxv_bin = fopen("idxv.dat", "w")) == NULL) {
+    memset(buffer, 0, sizeof(buffer));
+    sprintf(buffer, "idxv_%d.dat", exec_count);
+    if ((fidxv_bin = fopen(buffer, "w")) == NULL) {
         perror("open data file failed!");
         exit(1);
     }
@@ -601,38 +626,82 @@ mm_idx_t *mm_idx_gen(mm_bseq_file_t *fp, int w, int k, int b, int flag, int mini
             //Get B Array
             uint64_t n_buckets;
             n_buckets = kh_end((idxhash_t*)mi->B[i].h);
+            uint64_t tmp_n_buckets = ADDR_ALIGN(n_buckets, 8);
+            //fprintf(stderr, "n_buckets=%d, tmp_n_buckets=%d\n", n_buckets, tmp_n_buckets);
             B[1] = allh << 28 | allp >> 8;
             B[0] =(((allp&0xFF)<<56) | (n_buckets<<24));
             //fprintf(fidxbt, "%lx %lx %x\n", allh, allp, n_buckets);
-            szb = write64((uint8_t *)B, 16, szb, fidxb);
+            //szb = write64((uint8_t *)B, 16, szb, fidxb);
             write64_bin((uint8_t *)B, 16, fidxb_bin);
 
             //set B
             mi->B[i].hoff = allh;
             mi->B[i].poff = allp;
 
-            allh += n_buckets;
+            allh += tmp_n_buckets;
             allp += mi->B[i].n;
+            if(n_buckets%8 != 0)
+                fprintf(stderr, "n_buckets=%d, tmp_n_buckets=%d\n", n_buckets, tmp_n_buckets);
             //将 n_buckets h p 合并到128bit中，实际是拆分两个64bit 顺序分别为h-36bit|p-28bit|p-8bit|n_buckets-32bit|padding
-            for(int j = 0;j < n_buckets;++j){
-                uint64_t flags;
-                uint64_t keys;
-                flags = h->flags[j>>4];
-                keys = h->keys[j];
-                uint64_t a[2]={0};
-
-                //Get H Array
-                a[1] |= flags;
-                a[1] = (a[1] << 32) |((keys&0xffffffffffffUL)>>16);
-                a[0] |= keys&0xffff;
-                a[0] = a[0]<<48;
-                szh = write64((uint8_t *)a, 16, szh, fidxh);
-                write64_bin((uint8_t *)a, 16, fidxh_bin);
-
-                //Get Values Array
-                values = h->vals[j];//value是后期可能要优化为48bit    21-bit|22-bit|padding
-                szv = write64((uint8_t *)&values, 8, szv, fidxv);
-                write64_bin((uint8_t *)&values, 8, fidxv_bin);
+            for(j = 0;j < tmp_n_buckets;++j){
+                if(j >= n_buckets) {
+                    fprintf(stderr, "n_buckets=%d, tmp_n_buckets=%d\n", n_buckets, tmp_n_buckets);
+                    uint64_t a = 0;
+                    //szh = write64((uint8_t *)&a, 6, szh, fidxh);
+                    write64_bin((uint8_t *)&a, 6, fidxh_bin);           //多出来的元素写0
+                    if((j+1)%8 == 0) {
+                        if(j > 0) {
+                            uint64_t a[2];
+                            a[0] = 0;
+                            a[1] = 0;
+                            //szh = write64((uint8_t *)&a, 12, szh, fidxh);
+                            write64_bin((uint8_t *)&a, 12, fidxh_bin);      //补齐12个字节
+                        }
+                    }
+                    
+                    //Get Values Array
+                    values = 0;//value是后期可能要优化为48bit    21-bit|22-bit|padding
+                    //szv = write64((uint8_t *)&values, 8, szv, fidxv);
+                    write64_bin((uint8_t *)&values, 8, fidxv_bin);      //多出来的元素写0
+                    continue;
+                }
+                else {
+                    uint64_t keys;
+                    keys = h->keys[j];
+                    key48_t key0;
+                    memset(&key0.a, 0, 6);
+                    if(j%8 == 0) {
+                        if(j > 0) {
+                            uint64_t a[2];
+                            a[0] = 0;
+                            a[1] = 0;
+                            //szh = write64((uint8_t *)&a, 12, szh, fidxh);
+                            write64_bin((uint8_t *)&a, 12, fidxh_bin);      //补齐12个字节
+                        }
+                        uint64_t flags;
+                        flags = h->flags[j>>4];
+                        uint32_t t_flags = (uint32_t)flags;
+                        //szh = write64((uint8_t *)&t_flags, 4, szh, fidxh);
+                        write64_bin((uint8_t *)&t_flags, 4, fidxh_bin);     //写flags
+                    }
+                    set_key(&key0, keys);
+                    //szh = write64((uint8_t *)key0.a, 6, szh, fidxh);
+                    write64_bin((uint8_t *)key0.a, 6, fidxh_bin);     //写keys
+                    
+                    //Get Values Array
+                    values = h->vals[j];//value是后期可能要优化为48bit    21-bit|22-bit|padding
+                    //szv = write64((uint8_t *)&values, 8, szv, fidxv);
+                    write64_bin((uint8_t *)&values, 8, fidxv_bin);
+                }
+                
+                if(j == tmp_n_buckets-1) {
+                    uint64_t a[2];
+                    a[0] = 0;
+                    a[1] = 0;
+                    //szh = write64((uint8_t *)&a, 12, szh, fidxh);
+                    write64_bin((uint8_t *)&a, 12, fidxh_bin);      //补齐12个字节
+                }
+                
 				loop_num++;
             }
 
@@ -640,33 +709,32 @@ mm_idx_t *mm_idx_gen(mm_bseq_file_t *fp, int w, int k, int b, int flag, int mini
             int n = mi->B[i].n;
             for(int j = 0;j < n;++j){
                 values = mi->B[i].p[j];
-                szp = write64((uint8_t *)&values, 8, szp, fidxp);
+                //szp = write64((uint8_t *)&values, 8, szp, fidxp);
                 write64_bin((uint8_t *)&values, 8, fidxp_bin);
             }
         } else {
             //fprintf(fidxbt, "%lx %lx %x\n", 0L, 0L, 0);
-            szb = write64((uint8_t *)B, 16, szb, fidxb);
+            //szb = write64((uint8_t *)B, 16, szb, fidxb);
             write64_bin((uint8_t *)B, 16, fidxb_bin);
         }
     }
 
     //align to 4KB
-    fit4k(szb, fidxb);
-    fit4k(szh, fidxh);
-    fit4k(szp, fidxp);
-    fit4k(szv, fidxv);
+    //fit4k(szb, fidxb);
+    //fit4k(szh, fidxh);
+    //fit4k(szp, fidxp);
+    //fit4k(szv, fidxv);
 
-    fclose(fidxb);
-    fclose(fidxh);
-    fclose(fidxp);
-    fclose(fidxv);
+    //fclose(fidxb);
+    //fclose(fidxh);
+    //fclose(fidxp);
+    //fclose(fidxv);
     fclose(fidxb_bin);
     fclose(fidxh_bin);
     fclose(fidxp_bin);
     fclose(fidxv_bin);
 
     //fclose(fidxbt);
-
 	return pl.mi;
 }
 

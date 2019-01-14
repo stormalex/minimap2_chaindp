@@ -58,11 +58,11 @@ typedef struct __attribute__((__packed__)) _ODPHDR {
     uint8_t padding[40];
 } ODPHDR;
 
-#define BUFFSIZE (16 * 1024 * 1024)
+#define BUFFSIZE (160 * 1024 * 1024)
 extern char* txtbuff;
 extern int ntxt;
 extern char * gentxt(uint8_t *dat, int datlen);
-extern FILE *fcshi, *fcsho, *fdpi, *fdpo;
+//extern FILE *fcshi, *fcsho, *fdpi, *fdpo;
 extern FILE *fbcshi, *fbcsho, *fbdpi, *fbdpo;
 
 static uint8_t gbuff[BUFFSIZE];
@@ -254,9 +254,9 @@ mm128_t *mm_chain_dp(int max_dist_x, int max_dist_y, int bw, int max_skip, int m
 
         //write sim
         gentxt(gbuff, gbufflen);
-        fwrite(txtbuff, 1, ntxt, fdpi);
+        //fwrite(txtbuff, 1, ntxt, fdpi);
         gentxt(gobuff, gobufflen);
-        fwrite(txtbuff, 1, ntxt, fdpo);
+        //fwrite(txtbuff, 1, ntxt, fdpo);
 
         //write
         fwrite(gbuff, 1, gbufflen, fbdpi);
