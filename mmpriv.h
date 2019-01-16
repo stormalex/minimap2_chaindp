@@ -5,6 +5,11 @@
 #include "minimap.h"
 #include "bseq.h"
 
+#define CORE_SEED_NUM 512
+#define CORE_NUM    64
+#define SEED_NUM    32768
+#define MAX_SEED_NUM    (SEED_NUM * 8)
+
 #define MM_PARENT_UNSET   (-1)
 #define MM_PARENT_TMP_PRI (-2)
 

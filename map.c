@@ -284,6 +284,69 @@ static int gn = 0;
 static uint32_t gmagic = 0;
 static uint32_t gread = 0;
 
+#define CORE_ITEM(i, j) (((i) * CORE_SEED_NUM) + (j))
+
+void sort_bubble(mm128_t* a, unsigned int n)
+{
+    int i, j, k;
+    
+    mm128_t* core = (mm128_t*)malloc(sizeof(mm128_t) * CORE_NUM * CORE_SEED_NUM);
+    int* core_n = (int*)malloc(sizeof(int) * CORE_NUM);
+    int* core_idx = (int*)malloc(sizeof(int) * CORE_NUM);
+    memset(core_n, 0, sizeof(int) * CORE_NUM);
+    memset(core_idx, 0, sizeof(int) * CORE_NUM);
+    
+    for(i = 0; i < n; i++) {
+        core[CORE_ITEM(i%CORE_NUM, i/CORE_NUM)] = a[i];
+        core_n[i%CORE_NUM]++;
+    }
+    
+    /*for(i = 0; i < CORE_NUM; i++) {
+        fprintf(stderr, "core_n[%d]=%d\n", i, core_n[i]);
+    }*/
+    
+    for(i = 0; i < CORE_NUM; i++) {
+        for(k = 0; k < core_n[i]-1; k++) {
+            for(j = 0; j < core_n[i]-k-1; j++) {
+                if(core[CORE_ITEM(i,j)].x > core[CORE_ITEM(i,j+1)].x) {
+                    mm128_t tmp = core[CORE_ITEM(i,j)];
+                    core[CORE_ITEM(i,j)] = core[CORE_ITEM(i,j+1)];
+                    core[CORE_ITEM(i,j+1)] = tmp;
+                }
+            }
+        }
+    }
+    
+    int num = n;
+    int idx = 0;
+    j = 0;
+    while(num) {
+        uint64_t min_a = 0xffffffffffffffff;
+        int min_i = -1;
+        for(i = 0; i < CORE_NUM; i++) {
+            if(core_idx[i] == core_n[i]) {
+                continue;
+            }
+            idx = core_idx[i];
+            if(core[CORE_ITEM(i,idx)].x < min_a) {
+                min_a = core[CORE_ITEM(i,idx)].x;
+                min_i = i;
+            }
+        }
+        if(min_i == -1) {
+            fprintf(stderr, "could not happen\n");
+            exit(0);
+        }
+        idx = core_idx[min_i];
+        a[j++] = core[CORE_ITEM(min_i,idx)];
+        core_idx[min_i]++;
+        num--;
+    }
+    free(core_idx);
+    free(core_n);
+    free(core);
+}
+
 static mm128_t *collect_seed_hits(void *km, const mm_mapopt_t *opt, int max_occ, const mm_idx_t *mi, const char *qname, const mm128_v *mv, unsigned int bid, int qlen, int64_t *n_a, int *rep_len,
 								  int *n_mini_pos, uint64_t **mini_pos)
 {
@@ -404,7 +467,16 @@ static mm128_t *collect_seed_hits(void *km, const mm_mapopt_t *opt, int max_occ,
 	}
 	fclose(fp);
 #endif
-	radix_sort_128x(a, a + (*n_a));
+    if(*n_a > MAX_SEED_NUM || *n_a < SEED_NUM) {
+        radix_sort_128x(a, a + (*n_a));
+    }
+    else {
+        int i = 0;
+        for(i = 0; i < *n_a; i += SEED_NUM) {
+            int n = (*n_a - i >= SEED_NUM)?(SEED_NUM):(*n_a - i);
+            sort_bubble(&a[i], n);
+        }
+    }
 	//fprintf(stderr,"seed num %d\n",*n_a);
 
     if(mv->n > 0) {
@@ -458,6 +530,7 @@ static mm128_t *collect_seed_hits(void *km, const mm_mapopt_t *opt, int max_occ,
             gmagic++;
         }
     }
+
 	return a;
 }
 

@@ -83,7 +83,65 @@ mm128_t *mm_chain_dp(int max_dist_x, int max_dist_y, int bw, int max_skip, int m
 	mm128_t *b, *w;
     struct new_seed* fpga_a = NULL;
     int32_t *fpga_id = NULL;
-
+    
+    if(n > SEED_NUM && n < MAX_SEED_NUM) {
+        int segment = (n / SEED_NUM);
+        if(n % SEED_NUM != 0)
+            segment += 1;
+        
+        int* core_n = (int*)malloc(sizeof(int) * segment);
+        int* core_idx = (int*)malloc(sizeof(int) * segment);
+        memset(core_n, 0, sizeof(int) * segment);
+        memset(core_idx, 0, sizeof(int) * segment);
+        
+        mm128_t** a_array = (mm128_t**)malloc(sizeof(mm128_t*) * segment);
+        memset(a_array, 0, sizeof(mm128_t*) * segment);
+        for(i = 0; i < segment; i++) {
+            a_array[i] = (mm128_t*)malloc(sizeof(mm128_t) * SEED_NUM);
+            memset(a_array[i], 0, sizeof(mm128_t) * SEED_NUM);
+            if(i != (segment - 1)) {
+                memcpy(a_array[i], &a[i*SEED_NUM], sizeof(mm128_t) * SEED_NUM);
+                core_n[i] = SEED_NUM;
+            }
+            else {
+                memcpy(a_array[i], &a[i*SEED_NUM], sizeof(mm128_t) * (n % SEED_NUM));
+                core_n[i] = (n % SEED_NUM);
+            }
+        }
+    
+        int num = n;
+        int idx = 0;
+        j = 0;
+        while(num) {
+            uint64_t min_a = 0xffffffffffffffff;
+            int min_i = -1;
+            for(i = 0; i < segment; i++) {
+                if(core_idx[i] == core_n[i]) {
+                    continue;
+                }
+                idx = core_idx[i];
+                if(a_array[i][idx].x < min_a) {
+                    min_a = a_array[i][idx].x;
+                    min_i = i;
+                }
+            }
+            if(min_i == -1) {
+                fprintf(stderr, "could not happen\n");
+                exit(0);
+            }
+            idx = core_idx[min_i];
+            a[j++] = a_array[min_i][idx];
+            core_idx[min_i]++;
+            num--;
+        }
+        free(core_idx);
+        free(core_n);
+        for(i = 0; i < segment; i++) {
+            free(a_array[i]);
+        }
+        free(a_array);
+    }
+    
     // sim input
     int orglen;
     if (gn == 0) {
@@ -222,7 +280,7 @@ mm128_t *mm_chain_dp(int max_dist_x, int max_dist_y, int bw, int max_skip, int m
             new_i++;
         }
     }
-
+    
     // sim output
     orglen = gobufflen;
     ODPHDR *output = (ODPHDR *)(gobuff + gobufflen);
