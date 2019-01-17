@@ -348,7 +348,7 @@ void sort_bubble(mm128_t* a, unsigned int n)
 }
 
 static mm128_t *collect_seed_hits(void *km, const mm_mapopt_t *opt, int max_occ, const mm_idx_t *mi, const char *qname, const mm128_v *mv, unsigned int bid, int qlen, int64_t *n_a, int *rep_len,
-								  int *n_mini_pos, uint64_t **mini_pos)
+								  int *n_mini_pos, uint64_t **mini_pos, int gap_ref, int gap_qry)
 {
 	int i, k, n_m;
 	mm_match_t *m;
@@ -398,6 +398,8 @@ static mm128_t *collect_seed_hits(void *km, const mm_mapopt_t *opt, int max_occ,
 
         DPHDR *input = (DPHDR *)(gbuff + gbufflen);
         memset(input, 0, sizeof(DPHDR));
+		input->gap_ref = gap_ref;
+		input->gap_qry = gap_qry;
         input->seednum = mv->n;
         input->qlensum = qlen;
         input->ctxpos = 88;
@@ -611,7 +613,19 @@ void mm_map_frag(const mm_idx_t *mi, int n_segs, const int *qlens, const char **
 	collect_minimizers(b->km, opt, mi, n_segs, qlens, seqs, &mv);
 	//if (opt->flag & MM_F_HEAP_SORT) a = collect_seed_hits_heap(b->km, opt, opt->mid_occ, mi, qname, &mv, qlen_sum, &n_a, &rep_len, &n_mini_pos, &mini_pos);
 	//else
-		a = collect_seed_hits(b->km, opt, opt->mid_occ, mi, qname, &mv, bid, qlen_sum, &n_a, &rep_len, &n_mini_pos, &mini_pos);
+	
+	// set max chaining gap on the query and the reference sequence
+	if (is_sr)
+		max_chain_gap_qry = qlen_sum > opt->max_gap? qlen_sum : opt->max_gap;
+	else max_chain_gap_qry = opt->max_gap;
+	if (opt->max_gap_ref > 0) {
+		max_chain_gap_ref = opt->max_gap_ref; // always honor mm_mapopt_t::max_gap_ref if set
+	} else if (opt->max_frag_len > 0) {
+		max_chain_gap_ref = opt->max_frag_len - qlen_sum;
+		if (max_chain_gap_ref < opt->max_gap) max_chain_gap_ref = opt->max_gap;
+	} else max_chain_gap_ref = opt->max_gap;
+
+		a = collect_seed_hits(b->km, opt, opt->mid_occ, mi, qname, &mv, bid, qlen_sum, &n_a, &rep_len, &n_mini_pos, &mini_pos, max_chain_gap_ref, max_chain_gap_qry);
 	//if(n_a == 0) {fprintf(stderr,"error!\n");}
 	//fprintf(stderr,"finish one read!\n");
 #if 0
@@ -647,17 +661,6 @@ void mm_map_frag(const mm_idx_t *mi, int n_segs, const int *qlens, const char **
 					i == 0? 0 : ((int32_t)a[i].y - (int32_t)a[i-1].y) - ((int32_t)a[i].x - (int32_t)a[i-1].x));
 	}
 
-	// set max chaining gap on the query and the reference sequence
-	if (is_sr)
-		max_chain_gap_qry = qlen_sum > opt->max_gap? qlen_sum : opt->max_gap;
-	else max_chain_gap_qry = opt->max_gap;
-	if (opt->max_gap_ref > 0) {
-		max_chain_gap_ref = opt->max_gap_ref; // always honor mm_mapopt_t::max_gap_ref if set
-	} else if (opt->max_frag_len > 0) {
-		max_chain_gap_ref = opt->max_frag_len - qlen_sum;
-		if (max_chain_gap_ref < opt->max_gap) max_chain_gap_ref = opt->max_gap;
-	} else max_chain_gap_ref = opt->max_gap;
-
 	if(n_a > 65535) fprintf(stderr,"seed num over 65535 read name is %s\n",qname);
 	a = mm_chain_dp(max_chain_gap_ref, max_chain_gap_qry, opt->bw, opt->max_chain_skip, opt->min_cnt, opt->min_chain_score, is_splice, n_segs, n_a, a, &n_regs0, &u, b->km);
 	
@@ -683,7 +686,7 @@ void mm_map_frag(const mm_idx_t *mi, int n_segs, const int *qlens, const char **
 			kfree(b->km, mini_pos);
 			//if (opt->flag & MM_F_HEAP_SORT) a = collect_seed_hits_heap(b->km, opt, opt->max_occ, mi, qname, &mv, qlen_sum, &n_a, &rep_len, &n_mini_pos, &mini_pos);
 			//else
-		a = collect_seed_hits(b->km, opt, opt->max_occ, mi, qname, &mv, bid, qlen_sum, &n_a, &rep_len, &n_mini_pos, &mini_pos);
+		a = collect_seed_hits(b->km, opt, opt->max_occ, mi, qname, &mv, bid, qlen_sum, &n_a, &rep_len, &n_mini_pos, &mini_pos, max_chain_gap_ref, max_chain_gap_qry);
 			a = mm_chain_dp(max_chain_gap_ref, max_chain_gap_qry, opt->bw, opt->max_chain_skip, opt->min_cnt, opt->min_chain_score, is_splice, n_segs, n_a, a, &n_regs0, &u, b->km);
 		}
 	}
