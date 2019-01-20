@@ -286,6 +286,45 @@ static uint32_t gread = 0;
 
 #define CORE_ITEM(i, j) (((i) * CORE_SEED_NUM) + (j))
 
+//返回0表示成功插入，且没有弹出值
+//返回1表示成功插入，且有弹出值
+int insert_mm128(mm128_t* sort_a, int *sort_n, mm128_t data, mm128_t* out_data)
+{
+    int i = 0;
+    if(*sort_n == 0) {
+        sort_a[*sort_n] = data;
+        (*sort_n) = (*sort_n) + 1;
+        return 0;
+    }
+    else if(*sort_n > 0 && *sort_n < 4) {
+        for(i = 0; i < *sort_n; i++) {
+            if(data.x <= sort_a[i].x) {
+                mm128_t tmp_data = sort_a[i];
+                sort_a[i] = data;
+                data = tmp_data;
+            }
+        }
+        sort_a[i] = data;
+        (*sort_n) = (*sort_n) + 1;
+        return 0;
+    }
+    else if(*sort_n == 4) {
+        for(i = 0; i < *sort_n; i++) {
+            if(data.x <= sort_a[i].x) {
+                mm128_t tmp_data = sort_a[i];
+                sort_a[i] = data;
+                data = tmp_data;
+            }
+        }
+        *out_data = data;
+        return 1;
+    }
+    else {
+        fprintf(stderr, "sort n invalide:%d\n", *sort_n);
+    }
+    return -1;
+}
+
 void sort_bubble(mm128_t* a, unsigned int n)
 {
     int i, j, k;
@@ -306,15 +345,54 @@ void sort_bubble(mm128_t* a, unsigned int n)
     }*/
     
     for(i = 0; i < CORE_NUM; i++) {
-        for(k = 0; k < core_n[i]-1; k++) {
-            for(j = 0; j < core_n[i]-k-1; j++) {
-                if(core[CORE_ITEM(i,j)].x > core[CORE_ITEM(i,j+1)].x) {
-                    mm128_t tmp = core[CORE_ITEM(i,j)];
-                    core[CORE_ITEM(i,j)] = core[CORE_ITEM(i,j+1)];
-                    core[CORE_ITEM(i,j+1)] = tmp;
+        int t_num = core_n[i];
+        int a_num = t_num;
+        mm128_t* a_data = (mm128_t*)malloc(t_num*sizeof(mm128_t));
+        int b_num = 0;
+        mm128_t* b_data = (mm128_t*)malloc(t_num*sizeof(mm128_t));
+        memcpy(a_data, &core[CORE_ITEM(i,0)], t_num*sizeof(mm128_t));
+        mm128_t* out_data = (mm128_t*)malloc(t_num*sizeof(mm128_t));
+        int out_idx = 0;
+        while(a_num > 0) {
+            mm128_t sort_array[4];
+            int sort_idx = 0;
+            memset(sort_array, 0, sizeof(sort_array));
+            int a_idx = 0;
+            int b_idx = 0;
+            
+            for(a_idx = 0; a_idx < a_num; a_idx++) {
+                mm128_t out_data;
+                int ret = insert_mm128(sort_array, &sort_idx, a_data[a_idx], &out_data);
+                if(ret == 1) {
+                    b_data[b_idx++] = out_data;
+                }
+                if(ret == -1) {
+                    fprintf(stderr, "insert error\n");
+                    exit(0);
                 }
             }
+            //assert(a_num == (b_idx + sort_idx));
+            memcpy(&out_data[out_idx], sort_array, sort_idx*sizeof(mm128_t));
+            out_idx = out_idx + sort_idx;
+            
+            
+            //交换a b信息
+            a_num = 0;
+            b_num = b_idx;
+            
+            int tmp_num = a_num;
+            a_num = b_num;
+            b_num = tmp_num;
+            
+            mm128_t* tmp_data = a_data;
+            a_data = b_data;
+            b_data = tmp_data;
         }
+        free(a_data);
+        free(b_data);
+        assert(out_idx == t_num);
+        memcpy(&core[CORE_ITEM(i,0)], out_data, t_num*sizeof(mm128_t));
+        free(out_data);
     }
     
     int num = n;
@@ -335,7 +413,7 @@ void sort_bubble(mm128_t* a, unsigned int n)
         }
         if(min_i == -1) {
             fprintf(stderr, "could not happen\n");
-            exit(0);
+            assert(0);
         }
         idx = core_idx[min_i];
         a[j++] = core[CORE_ITEM(min_i,idx)];
@@ -348,7 +426,7 @@ void sort_bubble(mm128_t* a, unsigned int n)
 }
 
 static mm128_t *collect_seed_hits(void *km, const mm_mapopt_t *opt, int max_occ, const mm_idx_t *mi, const char *qname, const mm128_v *mv, unsigned int bid, int qlen, int64_t *n_a, int *rep_len,
-								  int *n_mini_pos, uint64_t **mini_pos, int gap_ref, int gap_qry)
+								  int *n_mini_pos, uint64_t **mini_pos)
 {
 	int i, k, n_m;
 	mm_match_t *m;
@@ -398,8 +476,6 @@ static mm128_t *collect_seed_hits(void *km, const mm_mapopt_t *opt, int max_occ,
 
         DPHDR *input = (DPHDR *)(gbuff + gbufflen);
         memset(input, 0, sizeof(DPHDR));
-		input->gap_ref = gap_ref;
-		input->gap_qry = gap_qry;
         input->seednum = mv->n;
         input->qlensum = qlen;
         input->ctxpos = 88;
@@ -469,7 +545,7 @@ static mm128_t *collect_seed_hits(void *km, const mm_mapopt_t *opt, int max_occ,
 	}
 	fclose(fp);
 #endif
-    if(*n_a > MAX_SEED_NUM || *n_a < SEED_NUM) {
+    if(*n_a >= MAX_SEED_NUM) {
         radix_sort_128x(a, a + (*n_a));
     }
     else {
@@ -613,19 +689,7 @@ void mm_map_frag(const mm_idx_t *mi, int n_segs, const int *qlens, const char **
 	collect_minimizers(b->km, opt, mi, n_segs, qlens, seqs, &mv);
 	//if (opt->flag & MM_F_HEAP_SORT) a = collect_seed_hits_heap(b->km, opt, opt->mid_occ, mi, qname, &mv, qlen_sum, &n_a, &rep_len, &n_mini_pos, &mini_pos);
 	//else
-	
-	// set max chaining gap on the query and the reference sequence
-	if (is_sr)
-		max_chain_gap_qry = qlen_sum > opt->max_gap? qlen_sum : opt->max_gap;
-	else max_chain_gap_qry = opt->max_gap;
-	if (opt->max_gap_ref > 0) {
-		max_chain_gap_ref = opt->max_gap_ref; // always honor mm_mapopt_t::max_gap_ref if set
-	} else if (opt->max_frag_len > 0) {
-		max_chain_gap_ref = opt->max_frag_len - qlen_sum;
-		if (max_chain_gap_ref < opt->max_gap) max_chain_gap_ref = opt->max_gap;
-	} else max_chain_gap_ref = opt->max_gap;
-
-		a = collect_seed_hits(b->km, opt, opt->mid_occ, mi, qname, &mv, bid, qlen_sum, &n_a, &rep_len, &n_mini_pos, &mini_pos, max_chain_gap_ref, max_chain_gap_qry);
+		a = collect_seed_hits(b->km, opt, opt->mid_occ, mi, qname, &mv, bid, qlen_sum, &n_a, &rep_len, &n_mini_pos, &mini_pos);
 	//if(n_a == 0) {fprintf(stderr,"error!\n");}
 	//fprintf(stderr,"finish one read!\n");
 #if 0
@@ -661,6 +725,17 @@ void mm_map_frag(const mm_idx_t *mi, int n_segs, const int *qlens, const char **
 					i == 0? 0 : ((int32_t)a[i].y - (int32_t)a[i-1].y) - ((int32_t)a[i].x - (int32_t)a[i-1].x));
 	}
 
+	// set max chaining gap on the query and the reference sequence
+	if (is_sr)
+		max_chain_gap_qry = qlen_sum > opt->max_gap? qlen_sum : opt->max_gap;
+	else max_chain_gap_qry = opt->max_gap;
+	if (opt->max_gap_ref > 0) {
+		max_chain_gap_ref = opt->max_gap_ref; // always honor mm_mapopt_t::max_gap_ref if set
+	} else if (opt->max_frag_len > 0) {
+		max_chain_gap_ref = opt->max_frag_len - qlen_sum;
+		if (max_chain_gap_ref < opt->max_gap) max_chain_gap_ref = opt->max_gap;
+	} else max_chain_gap_ref = opt->max_gap;
+
 	if(n_a > 65535) fprintf(stderr,"seed num over 65535 read name is %s\n",qname);
 	a = mm_chain_dp(max_chain_gap_ref, max_chain_gap_qry, opt->bw, opt->max_chain_skip, opt->min_cnt, opt->min_chain_score, is_splice, n_segs, n_a, a, &n_regs0, &u, b->km);
 	
@@ -686,7 +761,7 @@ void mm_map_frag(const mm_idx_t *mi, int n_segs, const int *qlens, const char **
 			kfree(b->km, mini_pos);
 			//if (opt->flag & MM_F_HEAP_SORT) a = collect_seed_hits_heap(b->km, opt, opt->max_occ, mi, qname, &mv, qlen_sum, &n_a, &rep_len, &n_mini_pos, &mini_pos);
 			//else
-		a = collect_seed_hits(b->km, opt, opt->max_occ, mi, qname, &mv, bid, qlen_sum, &n_a, &rep_len, &n_mini_pos, &mini_pos, max_chain_gap_ref, max_chain_gap_qry);
+		a = collect_seed_hits(b->km, opt, opt->max_occ, mi, qname, &mv, bid, qlen_sum, &n_a, &rep_len, &n_mini_pos, &mini_pos);
 			a = mm_chain_dp(max_chain_gap_ref, max_chain_gap_qry, opt->bw, opt->max_chain_skip, opt->min_cnt, opt->min_chain_score, is_splice, n_segs, n_a, a, &n_regs0, &u, b->km);
 		}
 	}

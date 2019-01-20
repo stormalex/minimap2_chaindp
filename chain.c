@@ -83,7 +83,55 @@ mm128_t *mm_chain_dp(int max_dist_x, int max_dist_y, int bw, int max_skip, int m
 	mm128_t *b, *w;
     struct new_seed* fpga_a = NULL;
     int32_t *fpga_id = NULL;
-    
+
+    // sim input
+    int orglen;
+    if (gn == 0) {
+        memset(gbuff, 0, sizeof(FPGAHDR));
+        memset(gobuff, 0, sizeof(FPGAHDR));
+        FPGAHDR *a = (FPGAHDR *)gbuff;
+        a->magic = gmagic;
+        a->type = 1;
+        a->tid = 0x66;
+        a->lat = 0x77;
+        gbufflen = sizeof(FPGAHDR);
+        FPGAHDR *o = (FPGAHDR *)gobuff;
+        o->magic = gmagic;
+        o->type = 1;
+        o->tid = 0x66;
+        o->lat = 0x77;
+        gobufflen = sizeof(FPGAHDR);
+    }
+    DPHDR *input = (DPHDR *)(gbuff + gbufflen);
+    memset(input, 0, sizeof(DPHDR));
+    input->gap_ref = max_dist_x;
+    input->gap_qry = max_dist_y;
+    input->seednum = n;
+    input->ctxpos = 0x88;
+    input->n_segs = n_segs;
+    gbufflen += sizeof(DPHDR);
+    memcpy(gbuff + gbufflen, a, n * 16);
+    gbufflen += n * 16;
+    if (gbufflen % 64 != 0) {
+        gbufflen = (gbufflen >> 6 << 6) + 64;
+    }
+    assert(gbufflen < BUFFSIZE);
+    FILE *fp;
+    if ((fp = fopen("DP_IN.dat", "a")) != NULL) {
+        fprintf(fp, "%x\n", max_dist_x);
+        fprintf(fp, "%x\n", max_dist_y);
+        fprintf(fp, "%lx\n", n);
+        fprintf(fp, "%x\n", n_segs);
+        fclose(fp);
+    }
+    if ((fp = fopen("DP_SEED.dat", "a")) != NULL) {
+        fprintf(fp, "\n\n%x\n", gn);
+        for (i = 0; i < n; i++) {
+            fprintf(fp, "%016lx%016lx\n", a[i].x, a[i].y);
+        }
+        fclose(fp);
+    }
+
     if(n > SEED_NUM && n < MAX_SEED_NUM) {
         int segment = (n / SEED_NUM);
         if(n % SEED_NUM != 0)
@@ -142,54 +190,6 @@ mm128_t *mm_chain_dp(int max_dist_x, int max_dist_y, int bw, int max_skip, int m
         free(a_array);
     }
     
-    // sim input
-    int orglen;
-    if (gn == 0) {
-        memset(gbuff, 0, sizeof(FPGAHDR));
-        memset(gobuff, 0, sizeof(FPGAHDR));
-        FPGAHDR *a = (FPGAHDR *)gbuff;
-        a->magic = gmagic;
-        a->type = 1;
-        a->tid = 0x66;
-        a->lat = 0x77;
-        gbufflen = sizeof(FPGAHDR);
-        FPGAHDR *o = (FPGAHDR *)gobuff;
-        o->magic = gmagic;
-        o->type = 1;
-        o->tid = 0x66;
-        o->lat = 0x77;
-        gobufflen = sizeof(FPGAHDR);
-    }
-    DPHDR *input = (DPHDR *)(gbuff + gbufflen);
-    memset(input, 0, sizeof(DPHDR));
-    input->gap_ref = max_dist_x;
-    input->gap_qry = max_dist_y;
-    input->seednum = n;
-    input->ctxpos = 0x88;
-    input->n_segs = n_segs;
-    gbufflen += sizeof(DPHDR);
-    memcpy(gbuff + gbufflen, a, n * 16);
-    gbufflen += n * 16;
-    if (gbufflen % 64 != 0) {
-        gbufflen = (gbufflen >> 6 << 6) + 64;
-    }
-    assert(gbufflen < BUFFSIZE);
-    FILE *fp;
-    if ((fp = fopen("DP_IN.dat", "a")) != NULL) {
-        fprintf(fp, "%x\n", max_dist_x);
-        fprintf(fp, "%x\n", max_dist_y);
-        fprintf(fp, "%lx\n", n);
-        fprintf(fp, "%x\n", n_segs);
-        fclose(fp);
-    }
-    if ((fp = fopen("DP_SEED.dat", "a")) != NULL) {
-        fprintf(fp, "\n\n%x\n", gn);
-        for (i = 0; i < n; i++) {
-            fprintf(fp, "%016lx%016lx\n", a[i].x, a[i].y);
-        }
-        fclose(fp);
-    }
-
 	if (_u) *_u = 0, *n_u_ = 0;
 	f = (int32_t*)kmalloc(km, n * 4);
 	p = (int32_t*)kmalloc(km, n * 4);
