@@ -144,18 +144,22 @@ mm128_t *mm_chain_dp(int max_dist_x, int max_dist_y, int bw, int max_skip, int m
         
         mm128_t** a_array = (mm128_t**)malloc(sizeof(mm128_t*) * segment);
         memset(a_array, 0, sizeof(mm128_t*) * segment);
+		int tmp_n = n;
         for(i = 0; i < segment; i++) {
             a_array[i] = (mm128_t*)malloc(sizeof(mm128_t) * SEED_NUM);
             memset(a_array[i], 0, sizeof(mm128_t) * SEED_NUM);
-            if(i != (segment - 1)) {
+            if(tmp_n >= SEED_NUM) {
                 memcpy(a_array[i], &a[i*SEED_NUM], sizeof(mm128_t) * SEED_NUM);
                 core_n[i] = SEED_NUM;
+				tmp_n -= SEED_NUM;
             }
             else {
-                memcpy(a_array[i], &a[i*SEED_NUM], sizeof(mm128_t) * (n % SEED_NUM));
-                core_n[i] = (n % SEED_NUM);
+                memcpy(a_array[i], &a[i*SEED_NUM], sizeof(mm128_t) * (tmp_n));
+                core_n[i] = tmp_n;
+				tmp_n -= tmp_n;
             }
         }
+		assert(tmp_n == 0);
     
         int num = n;
         int idx = 0;
@@ -175,7 +179,7 @@ mm128_t *mm_chain_dp(int max_dist_x, int max_dist_y, int bw, int max_skip, int m
             }
             if(min_i == -1) {
                 fprintf(stderr, "could not happen\n");
-                exit(0);
+                assert(0);
             }
             idx = core_idx[min_i];
             a[j++] = a_array[min_i][idx];
