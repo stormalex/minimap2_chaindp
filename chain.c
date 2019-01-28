@@ -74,7 +74,8 @@ static int maxcsh = 8;
 static int gn = 0;
 static uint32_t gmagic = 0;
 
-mm128_t *mm_chain_dp(int max_dist_x, int max_dist_y, int bw, int max_skip, int min_cnt, int min_sc, int is_cdna, int n_segs, int64_t n, mm128_t *a, int *n_u_, uint64_t **_u, void *km)
+unsigned int read_idx = 1;
+mm128_t *mm_chain_dp(int max_dist_x, int max_dist_y, int bw, int max_skip, int min_cnt, int min_sc, int is_cdna, int n_segs, int64_t n, mm128_t *a, int *n_u_, uint64_t **_u, void *km, int mv_n)
 { // TODO: make sure this works when n has more than 32 bits
 	int32_t k, *f, *p, *t, *v, n_u, n_v;
 	int64_t i, j, st = 0;
@@ -86,6 +87,7 @@ mm128_t *mm_chain_dp(int max_dist_x, int max_dist_y, int bw, int max_skip, int m
 
     // sim input
     int orglen;
+if(mv_n > 0) {
     if (gn == 0) {
         memset(gbuff, 0, sizeof(FPGAHDR));
         memset(gobuff, 0, sizeof(FPGAHDR));
@@ -116,22 +118,15 @@ mm128_t *mm_chain_dp(int max_dist_x, int max_dist_y, int bw, int max_skip, int m
         gbufflen = (gbufflen >> 6 << 6) + 64;
     }
     assert(gbufflen < BUFFSIZE);
-    FILE *fp;
+    /*FILE *fp;
     if ((fp = fopen("DP_IN.dat", "a")) != NULL) {
         fprintf(fp, "%x\n", max_dist_x);
         fprintf(fp, "%x\n", max_dist_y);
         fprintf(fp, "%lx\n", n);
         fprintf(fp, "%x\n", n_segs);
         fclose(fp);
-    }
-    if ((fp = fopen("DP_SEED.dat", "a")) != NULL) {
-        fprintf(fp, "\n\n%x\n", gn);
-        for (i = 0; i < n; i++) {
-            fprintf(fp, "%016lx%016lx\n", a[i].x, a[i].y);
-        }
-        fclose(fp);
-    }
-
+    }*/
+}
     if(n > SEED_NUM && n < MAX_SEED_NUM) {
         int segment = (n / SEED_NUM);
         if(n % SEED_NUM != 0)
@@ -193,7 +188,18 @@ mm128_t *mm_chain_dp(int max_dist_x, int max_dist_y, int bw, int max_skip, int m
         }
         free(a_array);
     }
-    
+if(mv_n > 0) {    
+    FILE *fp;
+    if ((fp = fopen("DP_SEED.dat", "a")) != NULL) {
+        fprintf(fp, "read:%u\n", read_idx);
+		read_idx++;
+        fprintf(fp, "\n\n%x\n", gn);
+        for (i = 0; i < n; i++) {
+            fprintf(fp, "%016lx%016lx\n", a[i].x, a[i].y);
+        }
+        fclose(fp);
+    }
+}
 	if (_u) *_u = 0, *n_u_ = 0;
 	f = (int32_t*)kmalloc(km, n * 4);
 	p = (int32_t*)kmalloc(km, n * 4);
@@ -286,6 +292,7 @@ mm128_t *mm_chain_dp(int max_dist_x, int max_dist_y, int bw, int max_skip, int m
     }
     
     // sim output
+if(mv_n > 0) {
     orglen = gobufflen;
     ODPHDR *output = (ODPHDR *)(gobuff + gobufflen);
     memset(output, 0, sizeof(ODPHDR));
@@ -327,7 +334,7 @@ mm128_t *mm_chain_dp(int max_dist_x, int max_dist_y, int bw, int max_skip, int m
         gn = 0;
         gmagic++;
     }
-
+}
     //lvjingbang
     uint64_t counter = 0;
 
