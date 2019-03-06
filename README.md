@@ -4,6 +4,11 @@
 [![Build Status](https://travis-ci.org/lh3/minimap2.svg?branch=master)](https://travis-ci.org/lh3/minimap2)
 ## <a name="started"></a>Getting Started
 ```sh
+
+ava模式
+master分支，最终版本
+BRANCH_MINIMAP2_DUMP_CHAINDP分支，dump测试数据的分支
+
 git clone https://github.com/lh3/minimap2
 cd minimap2 && make
 # long sequences against a reference genome
